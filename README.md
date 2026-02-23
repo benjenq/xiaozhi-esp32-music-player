@@ -189,7 +189,7 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 | main/boards/common/board.cc                           | 同上                                                                                   |
 | main/boards/common/power_save_timer.cc                | 啟用電源管理程序時，播放音樂不進入省電模式判定                                                              |
 
-[這裡](https://github.com/benjenq/xiaozhi-esp32-music-player/commit/84b26f016aacf31a7680544169c4061a4988c9ed)可以查看具體修改了哪些部分。
+[這裡](https://github.com/benjenq/xiaozhi-esp32-music-player/commit/6ec4ef7fcc7d4a1b56a6a167324ef183fa456824)可以查看具體修改了哪些部分。
 
 ---
 
