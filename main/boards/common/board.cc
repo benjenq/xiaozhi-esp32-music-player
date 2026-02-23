@@ -62,6 +62,10 @@ Camera* Board::GetCamera() {
     return nullptr;
 }
 
+MusicPlayer* Board::GetMusicPlayer(){
+    return nullptr;
+}
+
 Led* Board::GetLed() {
     static NoLed led;
     return &led;

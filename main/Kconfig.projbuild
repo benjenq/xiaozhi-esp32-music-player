@@ -870,4 +870,23 @@ menu "TAIJIPAI_S3_CONFIG"
         启动双声道
 endmenu
 
+menu "Music Streaming 串流音樂平台"
+
+    config SUBSONICAPI_URL
+        string "Subsonic API 伺服器位址"
+        default "http://192.168.0.101:4533/rest"
+        help
+            支援 Subsonic API（如自架的開源方案 Navidrome ）音樂伺服器 URL，例如：
+            http://192.168.0.101:4533/rest
+
+    config SUBSONICAPI_PARA
+        string "Subsonic API 的基本參數"
+        default "u=admin&p=password&s=raw&v=1.16.1&c=xiaozhi"
+        help
+            支援 Subsonic API（如自架的開源方案 Navidrome ）必要查詢參數，範例：
+            u=admin&p=password&s=raw&v=1.16.1&c=xiaozhi 。
+            另有 t=[token]&s=[隨機字串] 不傳密碼的模式（token=用md5計算密碼+隨機字串）:
+            u=admin&t=md5token_passwordooxx&s=ooxx&v=1.16.1&c=xiaozhi
+endmenu
+
 endmenu

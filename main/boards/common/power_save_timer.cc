@@ -1,5 +1,6 @@
 #include "power_save_timer.h"
 #include "application.h"
+#include "board.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -64,6 +65,13 @@ void PowerSaveTimer::PowerSaveCheck() {
     if (!in_sleep_mode_ && !app.CanEnterSleepMode()) {
         ticks_ = 0;
         return;
+    }
+
+    auto* music = Board::GetInstance().GetMusicPlayer();
+    if(music){
+        if(music->IsPlaying()){
+            return;
+        }
     }
 
     ticks_++;

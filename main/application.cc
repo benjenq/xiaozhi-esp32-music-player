@@ -692,7 +692,11 @@ void Application::HandleToggleChatEvent() {
         return;
     }
 
+    auto *music_player = Board::GetInstance().GetMusicPlayer();
     if (state == kDeviceStateIdle) {
+        if(music_player){
+            music_player->Stop();
+        }
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -706,6 +710,9 @@ void Application::HandleToggleChatEvent() {
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
     } else if (state == kDeviceStateListening) {
+        if(music_player){
+            music_player->Stop();
+        }
         protocol_->CloseAudioChannel();
     }
 }

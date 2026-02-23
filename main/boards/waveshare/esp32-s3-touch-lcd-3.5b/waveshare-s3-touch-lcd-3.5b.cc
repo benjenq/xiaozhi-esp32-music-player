@@ -30,6 +30,8 @@
 #include <lvgl.h>
 #include "esp_video.h"
 
+#include "httpmp3_player.h"  //串流音樂
+
 #define TAG "waveshare_lcd_3_5b"
 
 static const axs15231b_lcd_init_cmd_t lcd_init_cmds[] = {
@@ -109,6 +111,8 @@ private:
     LcdDisplay* display_;
     PowerSaveTimer* power_save_timer_;
     EspVideo* camera_;
+    
+    HttpMp3Player* music_player_ = nullptr;  //串流音樂
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -299,6 +303,10 @@ private:
         ESP_LOGI(TAG, "Touch panel initialized successfully");
     }
 
+    void InitializeTools(){
+        music_player_ = new HttpMp3Player();  //串流音樂
+    }
+
 public:
     CustomBoard() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -317,6 +325,7 @@ public:
 #endif
         InitializeButtons();
         InitializeCamera();
+        InitializeTools();
         GetBacklight()->RestoreBrightness();
     }
 
@@ -337,6 +346,11 @@ public:
     }
     virtual Camera* GetCamera() override {
         return camera_;
+    }
+    
+    /* 串流音樂 */
+    virtual HttpMp3Player * GetMusicPlayer() override {
+        return music_player_;
     }
 
 #if PMIC_ENABLE      
