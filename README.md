@@ -18,7 +18,7 @@
 
 實測支援 ESP32-S3 與 ESP32-C6，不支援最早期的 ESP32（資源不足），其他晶片未測試。使用 ESP-IDF 版本為 v5.5.2。
 
-- ESP32-C6 因效能問題，需關閉喚醒功能，否則播放音樂時會出現密集斷音、播放音樂緩慢的現象。
+- ESP32-C6 因效能問題，需關閉喚醒功能，否則播放音樂時會出現密集斷音、播放音樂緩慢的現象。且 C6 資源緊繃，連續播放中可能發生非預期崩潰現象。 
 - 使用 GIF 動畫表情包時，會影響播放音樂的效能，容易出現瞬斷音的情況。
 - 顯示歌詞時，關閉微信聊天風格可獲得些許的效能提升。
 
@@ -47,10 +47,14 @@
   註：Navidrome 的內建 Web 播放器，僅支援 mp3 的 ID3 內嵌歌詞，不支援外部 .lrc 歌詞顯示。所以請勿使用 Navidrome 內建 Web 播放器測試外掛歌詞功能。
 
 ## 如何使用本專案
+使用 `git clone` 指令下載專案源代碼
+```shell
+git clone https://github.com/benjenq/xiaozhi-esp32-music-player.git
+``` 
 
 ### 1. 修改代碼
 
-在對應的開發板上進行少量代碼修改，就能啟用播放串流音樂的功能。可參考 [`waveshare-s3-touch-lcd-3.5b.cc`](main/boards/waveshare/esp32-s3-touch-lcd-3.5b/waveshare-s3-touch-lcd-3.5b.cc)）：
+所有的開發板（`waveshare-s3-touch-lcd-3.5b`除外）預設並未引入播放串流音樂的功能，需在對應的開發板上進行少量代碼修改進行啟用。可參考 [`waveshare-s3-touch-lcd-3.5b.cc`](main/boards/waveshare/esp32-s3-touch-lcd-3.5b/waveshare-s3-touch-lcd-3.5b.cc)）：
 
 `#include`標頭段新增：
 
@@ -58,7 +62,7 @@
 #include "httpmp3_player.h"
 ```
 
-類別宣告段 `class CustomBoard : public WifiBoard` （或根據您擁有開發版的宣告類別）新增：
+類別宣告段 `class CustomBoard : public WifiBoard` （或根據您擁有開發板的宣告類別）新增：
 
 ```cpp
 HttpMp3Player* music_player_ = nullptr;
@@ -72,7 +76,7 @@ HttpMp3Player* music_player_ = nullptr;
     }
 ```
 
-開發版初始化引入播放器初始化程序（需參照不同的開發版的初始化結構）：
+開發板初始化引入播放器初始化程序（需參照不同的開發板的初始化結構）：
 
 ```cpp
     CustomBoard() : ...{
@@ -115,9 +119,9 @@ HttpMp3Player* music_player_ = nullptr;
 
 雖然本專案只用到兩個組件，不過由於 ESP-ADF 組件的相依性，仍須引入 ESP-IDF 中的 `audio_board` 組件，否則專案會編譯失敗。
 
-引入 `audio_board` 組件後，menuconfig 會出現 `Audio HAL - Audio board` 項目，必須選擇開發版，否則也會編譯失敗。
+引入 `audio_board` 組件後，menuconfig 會出現 `Audio HAL - Audio board` 項目，必須選擇開發板，否則也會編譯失敗。
 
-然而 `Audio board` 開發版清單又與小智 AI 專案的支援開發版清單不太相同，隨便選還會導致編譯失敗，所以必須「**補完 Custom audio board 的最少設定**」。概述如下：
+然而 `Audio board` 開發板清單又與小智 AI 專案的支援開發板清單不太相同，隨便選還會導致編譯失敗，所以必須「**補完 Custom audio board 的最少設定**」。概述如下：
 
 1. `esp-adf/components/audio_board` 新增目錄 `esp_audio_board_custom`
 

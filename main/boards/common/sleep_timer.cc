@@ -2,6 +2,7 @@
 #include "application.h"
 #include "board.h"
 #include "display.h"
+#include "board.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -68,6 +69,13 @@ void SleepTimer::CheckTimer() {
     if (!app.CanEnterSleepMode()) {
         ticks_ = 0;
         return;
+    }
+
+    auto* music = Board::GetInstance().GetMusicPlayer();
+    if(music){
+        if(music->IsPlaying()){
+            return;
+        }
     }
 
     ticks_++;

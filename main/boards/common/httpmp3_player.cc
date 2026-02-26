@@ -19,6 +19,8 @@
 
 #define TAG "HTTP-MP3-PLAYER"
 
+const int pipeline_task_prio_ = 10;
+
 bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::string& response, std::string& query_result);
 
 HttpMp3Player::HttpMp3Player(){
@@ -325,8 +327,8 @@ bool HttpMp3Player::start_playing()
     C++ 用物件收尾。
     */    
     // 啟動 task
-
-    xTaskCreate(
+    /*
+    BaseType_t result = xTaskCreate(
         streaming_task,
         "STREAM_TASK",
         8192,
@@ -334,6 +336,23 @@ bool HttpMp3Player::start_playing()
         5,
         nullptr
     );
+    */
+    // TaskHandle_t task_handle_ = nullptr;
+    const BaseType_t core_id = CONFIG_FREERTOS_NUMBER_OF_CORES - 1;
+    BaseType_t result = xTaskCreatePinnedToCore(
+        streaming_task,
+        "STREAM_TASK",
+        8192,
+        this,
+        pipeline_task_prio_, //優先權，0~24，越大越優先，要實際測試過才知道，太大會與 WIFI 搶資源，太小會斷音
+        nullptr, //&task_handle_,
+        core_id
+    );
+
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create streaming task");
+        return false;
+    }
 
     return true; // 立即回傳
 }
@@ -370,7 +389,16 @@ bool HttpMp3Player::start_streaming_pipeline(){
     }
     is_playing_ = true;
     stop_flag_ = false;
+    auto &board = Board::GetInstance();
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE); //避免待機時 WIFI 進入低功耗導致網路降速
+    vTaskDelay(pdMS_TO_TICKS(200));
 
+    // 定義管線 ring buffer 大小
+#if defined(CONFIG_SPIRAM)
+    const size_t PREBUFFER_THRESHOLD = 16 * 1024; // 啟用 PSRAM 時 16KB 緩衝
+#else
+    const size_t PREBUFFER_THRESHOLD = 8 * 1024; // 8KB 緩衝
+#endif
     ESP_LOGW(TAG, "開始 HTTP - MP3 - RAW 音樂管線流程....");
     ESP_LOGI(TAG, "代碼薅自 ESP-ADF 範例 pipeline_http_mp3 再做些修改...");
     
@@ -383,17 +411,20 @@ bool HttpMp3Player::start_streaming_pipeline(){
     pipeline = audio_pipeline_init(&pipeline_cfg);
     mem_assert(pipeline);
 
-    ESP_LOGI(TAG, "[2.1] Create http stream to read data");
+    ESP_LOGI(TAG, "[2.1] Create http stream to get data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
     http_stream_reader = http_stream_init(&http_cfg);
 
-    ESP_LOGI(TAG, "[2.2] Create mp3 decoder to decode mp3 file");
+    ESP_LOGI(TAG, "[2.2] Create mp3 decoder to decode mp3 data");
     mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
+    mp3_cfg.out_rb_size = PREBUFFER_THRESHOLD ; //原本只有 2K 有偶發斷音的現象
+    mp3_cfg.task_prio = pipeline_task_prio_;
     mp3_decoder = mp3_decoder_init(&mp3_cfg);
 
-    ESP_LOGI(TAG, "[2.3] Create raw stream to write data to codec chip");
+    ESP_LOGI(TAG, "[2.3] Create raw stream reader to read data from pipeline then write to codec chip");
     raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_cfg.type = AUDIO_STREAM_READER;
+    raw_cfg.out_rb_size = PREBUFFER_THRESHOLD;
     raw_stream_reader = raw_stream_init(&raw_cfg);
 
     ESP_LOGI(TAG, "[2.4] Register all elements to audio pipeline");
@@ -405,7 +436,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
     const char *link_tag[3] = {"http", "mp3", "raw"};
     audio_pipeline_link(pipeline, &link_tag[0], 3);
 
-    ESP_LOGI(TAG, "[2.6] Set up  uri (http as http_stream, mp3 as mp3 decoder, and default output is i2s)");
+    ESP_LOGI(TAG, "[2.6] Set up  uri");
     audio_element_set_uri(http_stream_reader, current_music_info_.mp3_url.c_str());
 
     ESP_LOGI(TAG, "[ 3 ] Set up  event listener");
@@ -415,31 +446,16 @@ bool HttpMp3Player::start_streaming_pipeline(){
     ESP_LOGI(TAG, "[3.1] Listening event from all elements of pipeline");
     audio_pipeline_set_listener(pipeline, evt);
 
+    ESP_LOGI(TAG, "[3.2] Prepare anything for playback control");
+    
     //取得小智 AI 的全域 codec
-    auto &board = Board::GetInstance();
     auto codec = board.GetAudioCodec();
     
     if (!codec->output_enabled())
     {
         codec->EnableOutput(true);
     }
-
-    ESP_LOGI(TAG, "[ 4 ] Start audio_pipeline");
-    audio_pipeline_run(pipeline);
-    
-    // 5. 數據橋接迴圈
-    constexpr size_t PCM_BYTES = 2048;
-    int16_t pcm_buf[PCM_BYTES / sizeof(int16_t)];
-    std::vector<int16_t> pcm_data;
-    pcm_data.reserve(PCM_BYTES / sizeof(int16_t));
-
-
-    int channels = 1;
-    int sample_rate = 44100;
-    size_t total_samples_played = 0;
-    int current_lyric_index = 0;
-    int complete_played = false; //判定是中斷或正常播完
-
+    //取得小智 AI 的屏幕物件
     auto display = board.GetDisplay();
 
     if(current_music_info_.lyric_count == 0){
@@ -448,6 +464,29 @@ bool HttpMp3Player::start_streaming_pipeline(){
             display->SetChatMessage("assistant", msg.c_str());
         });
     }
+    
+    // PCM 數據參數
+    constexpr size_t PCM_BYTES = 2048;
+    int16_t pcm_buf[PCM_BYTES / sizeof(int16_t)];
+    std::vector<int16_t> pcm_data;
+    pcm_data.reserve(PCM_BYTES / sizeof(int16_t));
+
+    //codec->SetOutputSampleRate 的預設參數：
+    //1. 將雙聲道合併為單聲，2. sample_rate 會跟著 MP3 變化。
+    int channels = 1; //
+    int sample_rate = 44100; // 當前 MP3 的採樣頻率
+
+    //參數：播放進度推算歌詞的位置
+    size_t total_samples_played = 0; //已播放的音頻數據，用來換算播放時間
+    int current_lyric_index = 0; //當前歌詞的位置
+
+    bool complete_played = false; //判定是中斷或正常播完
+
+    //預緩存機制
+    bool buffer_enabled = true; //是否啟用預緩存
+
+    ESP_LOGI(TAG, "[ 4 ] Start audio_pipeline");
+    audio_pipeline_run(pipeline);
 
     while (!stop_flag_) {
         // 1. 同步事件檢查 pipeline stop 或 music info
@@ -472,75 +511,106 @@ bool HttpMp3Player::start_streaming_pipeline(){
                     ESP_LOGI(TAG, "[ * ] http current position %d", http_info.byte_pos);                    
 
             }
+            // 加入對 mp3_decoder 狀態的監聽
+            if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT &&
+                msg.source == (void *) mp3_decoder && 
+                msg.cmd == AEL_MSG_CMD_REPORT_STATUS && 
+                ((int)msg.data == AEL_STATUS_STATE_STOPPED || (int)msg.data == AEL_STATUS_STATE_FINISHED)) {
+                
+                ESP_LOGW(TAG, "mp3_decoder (AEL_STATUS_STATE = %d)，切換至強迫輸出模式...", msg.data);
+                // 關鍵：一旦解碼器結束，就強制解除 buffer_enabled 狀態
+                buffer_enabled = false;
+            }
             //正常播完
             if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT &&
                 msg.source == (void *) raw_stream_reader &&
                 msg.cmd == AEL_MSG_CMD_REPORT_STATUS &&
-                (((int)msg.data == AEL_STATUS_STATE_STOPPED) || ((int)msg.data == AEL_STATUS_STATE_FINISHED))) {
+                ((int)msg.data == AEL_STATUS_STATE_STOPPED || (int)msg.data == AEL_STATUS_STATE_FINISHED)) {
                     complete_played = true;
-                    stop_flag_ = true;                
-                break;
-            }
-        }  
-        // 2. 讀出管線中的 PCM 數據。mp3_decoder 已經幫忙處理成 PCM 數據，
-        int read_len = raw_stream_read(raw_stream_reader, reinterpret_cast<char *>(pcm_buf), PCM_BYTES);
-        if (read_len > 0) {
-            size_t num_samples = read_len / sizeof(int16_t); // 總樣本數
-            //size_t channels = music_info.channels;          // mp3 decoder 的 channel 數
-
-            if (channels == 2) {
-                // stereo -> mono
-                size_t mono_samples = num_samples / 2;
-                for (size_t i = 0; i < mono_samples; ++i) {
-                    int16_t left  = pcm_buf[2*i];
-                    int16_t right = pcm_buf[2*i + 1];
-                    pcm_buf[i] = (left / 2 + right / 2); // 混合成 mono
+                    stop_flag_ = true;
+                    ESP_LOGW(TAG, "raw_stream_reader (AEL_STATUS_STATE = %d)，正常結束...", msg.data);
+                    break;
                 }
-                num_samples = mono_samples;
-            }
-            // 開始計算時間，準備同步歌詞
-            // 累計樣本數，以原本的 num_samples 為計算基準而不是單聲道 mono_samples
-            total_samples_played += num_samples;
-
-            if(current_music_info_.lyric_count > 0){
-                // ===== 歌時同步歌詞 =====
-                // 計算目前播放時間（毫秒）
-                uint32_t current_ms = (uint64_t)total_samples_played * 1000 / sample_rate;
-                while (current_lyric_index < current_music_info_.lyric_count &&
-                    current_ms >= current_music_info_.lyrics[current_lyric_index].start_ms) {
-                    //display_lyric(_current_music_info.lyrics[_current_lyric_index].text);
-                    //ESP_LOGI(TAG, "%s", current_music_info_.lyrics[current_lyric_index].text );
-                    app.Schedule([display , message = current_music_info_.lyrics[current_lyric_index].text ]() {
-                        display->SetChatMessage("assistant", message);
-                    });
-                    current_lyric_index++;
-                }
-            }
-            // 計算秒數 保留這段寫法
-            //float seconds_played = (float)total_samples_played / sample_rate;
-            //int minutes = (int)(seconds_played / 60);
-            //int seconds = (int)(seconds_played) % 60;
-
-            // 日誌 / 外部可讀
-            //ESP_LOGI(TAG, "播放進度 %02d:%02d", minutes, seconds);
-
-            // 將 PCM 放入 vector
-            pcm_data.assign(pcm_buf, pcm_buf + num_samples);
-
-            // 送給 codec
-            codec->OutputData(pcm_data);
-        } else {
-            vTaskDelay(5 / portTICK_PERIOD_MS); // 等 buffer 填滿
-            ESP_LOGI(TAG, "沒資料");
         }
 
-          
+        // 2. 緩衝機制
+        if (buffer_enabled){
+            // 2.1 檢查 mp3_decoder 輸出端目前累積了多少資料
+            //ringbuf_handle_t out_rb = audio_element_get_output_ringbuf(mp3_decoder);
+            // 2.1 檢查 Raw Stream 輸入端目前累積了多少資料
+            ringbuf_handle_t in_rb = audio_element_get_input_ringbuf(raw_stream_reader);
+            int fill_level = rb_bytes_filled(in_rb);
+            // 2.2. 如果解碼器還在跑，才執行補水邏輯；如果解碼器停了，就直接往下走。
+            // 只有在「真的乾了(fill_level < 4 * 1024)」或是「正在補水且還沒補滿(is_buffering)」時才停下來
+            if(fill_level < ((4 * 1024 < PREBUFFER_THRESHOLD / 2) ? (4 * 1024) : (PREBUFFER_THRESHOLD / 2)) ){
+                ESP_LOGI(TAG, "預緩衝中... %d/%d", fill_level, PREBUFFER_THRESHOLD);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+        }
+        try {
+            // 3. 讀出管線中的 PCM 數據。mp3_decoder 已經幫忙處理成 PCM 數據，
+            int read_len = raw_stream_read(raw_stream_reader, reinterpret_cast<char *>(pcm_buf), PCM_BYTES);
+            if (read_len > 0) {
+                size_t num_samples = read_len / sizeof(int16_t); // 總樣本數
+                //size_t channels = music_info.channels;          // mp3 decoder 的 channel 數
+
+                if (channels == 2) {
+                    // stereo -> mono
+                    size_t mono_samples = num_samples / 2;
+                    for (size_t i = 0; i < mono_samples; ++i) {
+                        int16_t left  = pcm_buf[2*i];
+                        int16_t right = pcm_buf[2*i + 1];
+                        pcm_buf[i] = (left / 2 + right / 2); // 混合成 mono
+                    }
+                    num_samples = mono_samples;
+                }
+                // 開始計算時間，準備同步歌詞
+                // 累計樣本數，以原本的 num_samples 為計算基準而不是單聲道 mono_samples
+                total_samples_played += num_samples;
+
+                if(current_music_info_.lyric_count > 0){
+                    // ===== 播歌時同步歌詞 =====
+                    // 計算目前播放時間（毫秒）
+                    uint32_t current_ms = (uint64_t)total_samples_played * 1000 / sample_rate;
+                    while (current_lyric_index < current_music_info_.lyric_count &&
+                        current_ms >= current_music_info_.lyrics[current_lyric_index].start_ms) {
+                        //display_lyric(_current_music_info.lyrics[_current_lyric_index].text);
+                        //ESP_LOGI(TAG, "%s", current_music_info_.lyrics[current_lyric_index].text );
+                        app.Schedule([display , message = current_music_info_.lyrics[current_lyric_index].text ]() {
+                            display->SetChatMessage("assistant", message);
+                        });
+                        current_lyric_index++;
+                    }
+                }
+                // 計算秒數 保留這段寫法
+                //float seconds_played = (float)total_samples_played / sample_rate;
+                //int minutes = (int)(seconds_played / 60);
+                //int seconds = (int)(seconds_played) % 60;
+
+                // 日誌 / 外部可讀
+                //ESP_LOGI(TAG, "播放進度 %02d:%02d", minutes, seconds);
+
+                // 將 PCM 放入 vector
+                pcm_data.assign(pcm_buf, pcm_buf + num_samples);
+
+                // 送給 codec
+                codec->OutputData(pcm_data);
+            }
+
+        } catch(const std::exception &e) {
+            ESP_LOGE(TAG, "Exception: %s", e.what());
+            stop_flag_ = true; // 安全停止
+        }
     }
 
     ESP_LOGI(TAG, "[ 5 ] Stop audio_pipeline");
     audio_pipeline_stop(pipeline);
     audio_pipeline_wait_for_stop(pipeline);
+    // ⭐ 再等一下確保 element task 真正退出，播免後續資源清除不乾淨，例如監聽物件仍在作用，導致崩潰錯誤
+    vTaskDelay(pdMS_TO_TICKS(30));
     audio_pipeline_terminate(pipeline);
+    audio_pipeline_wait_for_stop(pipeline);   // 再一次保險
 
     /* Terminate the pipeline before removing the listener */
     audio_pipeline_unregister(pipeline, http_stream_reader);
@@ -559,10 +629,11 @@ bool HttpMp3Player::start_streaming_pipeline(){
     audio_element_deinit(mp3_decoder);
 
     is_playing_ = false;
+    board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); //恢復待機時 WIFI 低功耗
 
     current_music_info_ = MusicInfo{}; //重置內容
 
-    codec->ResetOutputSampleRate();
+    codec->ResetOutputSampleRate(); //恢復原來的設定
 
     if(complete_played){
         app.Schedule([display, message = Lang::Strings::MUSIC_FINISHED]() {

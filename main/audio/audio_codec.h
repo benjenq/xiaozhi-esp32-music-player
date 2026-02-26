@@ -51,7 +51,7 @@ protected:
     bool output_enabled_ = false;
     int input_sample_rate_ = 0;
     int output_sample_rate_ = 0;
-    int original_output_sample_rate_ = 0; //httpmp3_player
+    int original_output_sample_rate_ = 0; //ht
     int input_channels_ = 1;
     int output_channels_ = 1;
     int output_volume_ = 70;
