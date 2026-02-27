@@ -369,7 +369,7 @@ void HttpMp3Player::streaming_task(void* arg)
 }
 
 bool HttpMp3Player::start_streaming_pipeline(){
-    #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C6 ，不支援最早的 ESP32"
+    #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C5 / C6 ，不支援最早的 ESP32"
 
     if (current_music_info_.mp3_url.empty())
     {
@@ -413,6 +413,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     ESP_LOGI(TAG, "[2.1] Create http stream to get data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
+    http_cfg.task_prio = pipeline_task_prio_; //解決 ESP32 C5 出現看門狗警告、下載卡頓。
     http_stream_reader = http_stream_init(&http_cfg);
 
     ESP_LOGI(TAG, "[2.2] Create mp3 decoder to decode mp3 data");
@@ -544,7 +545,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
             // 只有在「真的乾了(fill_level < 4 * 1024)」或是「正在補水且還沒補滿(is_buffering)」時才停下來
             if(fill_level < ((4 * 1024 < PREBUFFER_THRESHOLD / 2) ? (4 * 1024) : (PREBUFFER_THRESHOLD / 2)) ){
                 ESP_LOGI(TAG, "預緩衝中... %d/%d", fill_level, PREBUFFER_THRESHOLD);
-                vTaskDelay(pdMS_TO_TICKS(20));
+                vTaskDelay(pdMS_TO_TICKS(25));
                 continue;
             }
         }
@@ -639,6 +640,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
         app.Schedule([display, message = Lang::Strings::MUSIC_FINISHED]() {
             display->SetChatMessage("assistant", message);
         });
+        vTaskDelay(pdMS_TO_TICKS(400)); //讓對話的畫面滑順一點
         if(app.GetDeviceState() == kDeviceStateIdle){
             app.ToggleChatState();
         }
