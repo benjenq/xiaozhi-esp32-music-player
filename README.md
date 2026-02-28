@@ -10,7 +10,11 @@
 
 ## 專案說明
 
-基於 [78/xiaozhi-esp32 v2.2.3](https://github.com/78/xiaozhi-esp32/tree/b34a9b19baebfa17d8fcaa0ed494444aaba174e5) 的二次開發，支援播放 Subsonic API 串流音樂平台的聊天機器人，並支援歌詞同步顯示。
+基於 [78/xiaozhi-esp32 v2.2.3](https://github.com/78/xiaozhi-esp32/tree/b34a9b19baebfa17d8fcaa0ed494444aaba174e5) 的二次開發，支援播放 Subsonic API 串流音樂平台的聊天機器人，並支援
+- 歌詞同步顯示。
+- 連續播放模式。
+
+***註：通電啟動時為「單曲模式」，可語音切換為「連續播放模式」。此設定不會儲存，重開機即重置為單曲模式***
 
 專案使用 `ESP-ADF` 開發套件中的 `audio_stream` 與 `audio_pipeline` 組件。因此編譯本專案時，編譯環境中必須安裝 `ESP-ADF`。
 
@@ -104,10 +108,17 @@ HttpMp3Player* music_player_ = nullptr;
 智能體 - 角色配置 - 角色介紹，新增提示詞，
 
 ```text
-收到音乐相关的需求时，只使用 MPC 工具 self.music.play_song，同时禁止使用 search_music 功能。播放成功时不回话。
+收到音乐相关的需求时，只使用 MCP 工具 self.music.play_song，同时禁止使用 search_music 功能。播放成功时回覆播放讯息。
+
+收到设置播放模式相关需求时，使用 MCP 工具 self.music.set_play_mode 进行设置。设置成功时播放回覆讯息。
+
 ```
 
 強迫機器人關閉內建的雲端音樂播放功能，執行指定的音樂流播放工具。
+
+播放模式切換：
+- *使用「設置單曲模式」、「設置連播模式」等類似命令切換。*
+- *有時 AI 會假回覆但其實沒有使用 MCP 設置，要注意一下*
 
 ### 4. ESP-ADF 的補完，以及 ESP-IDF 的修正
 
