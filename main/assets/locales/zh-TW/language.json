@@ -55,6 +55,7 @@
         "FLIGHT_MODE_OFF": "飛航模式已關閉",
         "FLIGHT_MODE_ON": "飛航模式已開啟",
         "MODEM_INIT_ERROR": "模組初始化失敗",
+        "NUM_SONGS_FOUND": "〖找到 %d 首歌〗",
         "MUSIC_FINISHED": "《～♪ 音樂播放完畢 ♪～》",
         "MUSIC_STOPPED": "《～音樂播放中斷～》"
     }

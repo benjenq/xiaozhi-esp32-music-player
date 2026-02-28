@@ -13,18 +13,15 @@ typedef enum {
 
 struct LyricLine {
     uint32_t start_ms;
-    char text[128];   // 固定大小，避免動態配置
+    char text[128];   // 固定大小，避免動態配置出現 heap fragmentation（碎片化）
 };
-
-
 struct MusicInfo {
     std::string song_id;
     std::string title;
     std::string artist;
     std::string mp3_url;
     int sample_rate;
-    LyricLine* lyrics = nullptr;
-    int lyric_count = 0;
+    std::vector<LyricLine> lyrics;
 };
 
 class HttpMp3Player : public MusicPlayer {
@@ -43,7 +40,7 @@ public: // HttpMp3Player 方法
 private:
     bool is_playing_ = false;
     bool stop_flag_ = false;
-    MusicInfo current_music_info_ = {}; //宣告、初始化（initialization）時可以這樣寫。
+    MusicInfo current_music_info_ = {}; //宣告、初始化（initialization）時可以這樣寫。後續清空也只需要 current_music_info_ = {};
     std::unique_ptr<Http> http_ = nullptr; //共用 http 連線物件
 
     //連續播放模式

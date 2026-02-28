@@ -55,6 +55,7 @@
         "DOWNLOAD_ASSETS_FAILED": "Failed to download assets",
         "LOADING_ASSETS": "Loading assets...",
         "HELLO_MY_FRIEND": "Hello, my friend!",
+        "NUM_SONGS_FOUND": "〖 %d of Songs Found 〗",
         "MUSIC_FINISHED": "《~ ♪ Playback Ended ♪ ~》",
         "MUSIC_STOPPED": "《~ Playback Stopped ~》"
     }

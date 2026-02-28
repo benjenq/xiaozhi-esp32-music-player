@@ -16,7 +16,6 @@
 
 #include "mcp_server.h"
 
-
 #define TAG "HttpMp3Player"
 
 const int pipeline_task_prio_ = 10;
@@ -28,41 +27,51 @@ bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::
 HttpMp3Player::HttpMp3Player(){
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddTool("self.music.play_song",
-        "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
-             "参数:\n"
-             "  `song_name`: 要播放的歌曲名称（可选，默认为空字符串）。\n"
-             "  `artist_name`: 要播放的歌曲艺术家名称（可选，默认为空字符串）。\n"
-             "返回:\n"
-             "  播放状态信息，不需确认，立刻播放歌曲。", 
+            "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
+            "参数说明:\n"
+            "  `song_name`: 要播放的歌曲名称（可选，默认为空字符串）。\n"
+            "  `artist_name`: 要播放的主唱者或艺术家名称（可选，默认为空字符串）。\n"
+            "使用规则:\n"
+            "  用户未提到明确的主唱、艺术家、歌曲名称，相关栏位以空字串符替代。\n"
+            "返回:\n"
+            "  播放状态信息，不需确认，立刻播放歌曲。\n"
+            "范例:\n"
+            "  '播放五月天的倔强'\n"
+            "  '我想听周董的歌'\n"
+            "  '帮我随便挑一首歌，歌名歌手随意'\n", 
         PropertyList({
                  Property("song_name", kPropertyTypeString),//歌曲名称（必需）
                  Property("artist_name", kPropertyTypeString, "")//艺术家名称（可选，默认为空字符串）
         }), 
         [this](const PropertyList& properties) -> ReturnValue {
-            ESP_LOGW(TAG, "MCP 執行 HTTP-MP3-PLAYER ");
+            ESP_LOGW(TAG, "MCP 執行 Http-Mp3-Player ");
             auto song_name = properties["song_name"].value<std::string>();
             auto artist_name = properties["artist_name"].value<std::string>();
             std::string message;
             if (!this->QuerySong(song_name, artist_name, message)) {
                 return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
             }
-            //auto download_result = music->GetDownloadResult();
             ESP_LOGI(TAG, "Music details result: %s", message.c_str());
             return "{\"success\": true, \"message\": \"" +  message + "\"}";
     });
     ESP_LOGI(TAG, "HttpMp3Player with MCP Tools `self.music.play_song` created.");
+    //播放模式設定
     mcp_server.AddTool("self.music.set_play_mode",
-            "设置播放播放模式。可以选择单曲或连播，设置对应的播放模式。\n"
+            "装置支援音乐播放，此工具可设置本设备对应的播放模式，可以选择单曲播放模式(播放一首后停止)或连续播放模式(持续播放不同歌曲)。\n"
             "参数:\n"
             "  `playmode`: 播放模式，可选值为 'single'(单曲）或 'continuous'（连续）。\n"
             "返回:\n"
             "  设置结果信息。\n"
+            "使用規則:\n"
+            "  当用户提到'设定播放模式'或类似需求时时使用，用户需求可参照范例。\n"
             "范例:\n"
             "  '单曲模式'\n"
             "  '单曲播放'\n"
             "  '设置单曲模式'\n"
+            "  '设定单曲模式'\n"
             "  '单曲播放'\n"
-            "  '设置轮播模式'\n"
+            "  '设置连播模式'\n"
+            "  '设定轮播模式'\n"
             "  '连续模式'\n"
             "  '连续播放'\n"
             "  '循环模式'\n"
@@ -179,9 +188,11 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
         query_result = "開始隨機播放歌曲:《" + current_music_info_.title + "》等 " + std::to_string(playlists.size()) + " 首歌。";
         auto *display = Board::GetInstance().GetDisplay();
         auto &app = Application::GetInstance();
-        std::string msg = "《找到 " + std::to_string((int)playlists.size()) + " 首歌》";
+        //std::string msg = "《找到 " + std::to_string((int)playlists.size()) + " 首歌》";
+        char msg[30];
+        snprintf(msg, sizeof(msg), Lang::Strings::NUM_SONGS_FOUND, playlists.size());
         app.Schedule([display, msg]() {
-            display->SetChatMessage("assistant", msg.c_str());
+            display->SetChatMessage("assistant", msg);
         });
         vTaskDelay(pdMS_TO_TICKS(150));
     }
@@ -339,6 +350,7 @@ bool HttpMp3Player::parse_response_to_musicinfo(std::string& response, std::stri
             //cJSON *_artist = cJSON_GetObjectItem(song, "artist");
             //ESP_LOGI(TAG,"歌曲：%s, 歌手：%s", _title->valuestring, _artist->valuestring);
         }
+        current_music_info_ = MusicInfo{}; //清空並釋放資源
 
         uint32_t r = esp_random();   // 硬體亂數
         int index = r % song_count; // 取餘數，範圍是 0~ (song_count-1)，亂數取歌
@@ -386,47 +398,42 @@ bool HttpMp3Player::parse_response_to_lyric(std::string& response, std::string& 
         return false;
     }
 
-    // 先釋放舊陣列，避免 memory leak
-    if (current_music_info_.lyrics) {
-        free(current_music_info_.lyrics);
-        current_music_info_.lyrics = nullptr;
-        current_music_info_.lyric_count = 0;
-    }
-    // 配置新陣列
-    current_music_info_.lyrics = (LyricLine*)malloc(sizeof(LyricLine) * lyric_count);
-    current_music_info_.lyric_count = lyric_count;
+    // 先釋放舊陣列
+    current_music_info_.lyrics.clear();
+    current_music_info_.lyrics.shrink_to_fit();
 
     for (int i = 0; i < lyric_count; i++) {
         cJSON *line = cJSON_GetArrayItem(lines, i);
         cJSON *start = cJSON_GetObjectItem(line, "start");
         cJSON *value = cJSON_GetObjectItem(line, "value");
 
-        current_music_info_.lyrics[i].start_ms = start->valueint;
-        strlcpy(current_music_info_.lyrics[i].text, value->valuestring, sizeof(current_music_info_.lyrics[i].text));
+        LyricLine lyric{};
+        lyric.start_ms = start->valueint;
+        strlcpy(lyric.text,
+            value->valuestring,
+            sizeof(lyric.text));
+        current_music_info_.lyrics.push_back(lyric);
     }
+    
     cJSON_Delete(response_json);
-    if (current_music_info_.lyrics) {
-        for (int i = 0; i < current_music_info_.lyric_count; i++) {
+    if (current_music_info_.lyrics.size() > 0) {
+        for (int i = 0; i < current_music_info_.lyrics.size() ; i++) {
             ESP_LOGD(TAG, "%u ms : %s", 
                 current_music_info_.lyrics[i].start_ms, 
                 current_music_info_.lyrics[i].text);
         }
     }
-    return lyric_count > 0 ? true : false;
+    return !current_music_info_.lyrics.empty();
+    //return lyric_count > 0 ? true : false;
 }
 
 void HttpMp3Player::continuous_playing(){
-    if(!http_){
-        auto network = Board::GetInstance().GetNetwork();
-        http_ = network->CreateHttp(0);
-        http_->SetTimeout(1500);
-    }
+
     int song_count = playlists.size();
     if (song_count <= 0){
         ESP_LOGE(TAG, "playlists 沒有歌曲！");
     }
 
-    
     try { //重建 current_music_info_ 與歌詞
         std::string next_song_id = current_music_info_.song_id;
         while (song_count >= 2 && next_song_id == current_music_info_.song_id) //避免下一首挑到同一首歌
@@ -441,7 +448,12 @@ void HttpMp3Player::continuous_playing(){
 
         std::string lyric_response, query_result;
         std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(current_music_info_.song_id);
-        
+
+        if(!http_){
+            auto network = Board::GetInstance().GetNetwork();
+            http_ = network->CreateHttp(0);
+            http_->SetTimeout(1500);
+        }
         if (http_get_response(http_, full_query_lyric_url, lyric_response, query_result)){
             if(!parse_response_to_lyric(lyric_response, query_result)){
                 ESP_LOGE(TAG, "歌詞回應解析失敗！");
@@ -599,7 +611,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
     //取得小智 AI 的屏幕物件
     auto display = board.GetDisplay();
 
-    if(current_music_info_.lyric_count == 0){
+    if((int)current_music_info_.lyrics.size() == 0){
         std::string msg = "《" + current_music_info_.title + "》沒有歌詞。";
         app.Schedule([display, msg]() {
             display->SetChatMessage("assistant", msg.c_str());
@@ -619,7 +631,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     //參數：播放進度推算歌詞的位置
     size_t total_samples_played = 0; //已播放的音頻數據，用來換算播放時間
-    int current_lyric_index = 0; //當前歌詞的位置
+    size_t current_lyric_index = 0; //當前歌詞的位置
 
     bool complete_played = false; //判定是中斷或正常播完
 
@@ -710,11 +722,12 @@ bool HttpMp3Player::start_streaming_pipeline(){
                 // 累計樣本數，以原本的 num_samples 為計算基準而不是單聲道 mono_samples
                 total_samples_played += num_samples;
 
-                if(current_music_info_.lyric_count > 0){
+                if((int)current_music_info_.lyrics.size() > 0){
                     // ===== 播歌時同步歌詞 =====
                     // 計算目前播放時間（毫秒）
                     uint32_t current_ms = (uint64_t)total_samples_played * 1000 / sample_rate;
-                    while (current_lyric_index < current_music_info_.lyric_count &&
+                    size_t lyric_count = current_music_info_.lyrics.size();
+                    while (current_lyric_index < lyric_count &&
                         current_ms >= current_music_info_.lyrics[current_lyric_index].start_ms) {
                         //display_lyric(_current_music_info.lyrics[_current_lyric_index].text);
                         //ESP_LOGI(TAG, "%s", current_music_info_.lyrics[current_lyric_index].text );
@@ -772,7 +785,10 @@ bool HttpMp3Player::start_streaming_pipeline(){
     is_playing_ = false;
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); //恢復待機時 WIFI 低功耗
 
-    current_music_info_ = MusicInfo{}; //重置內容
+    //當完整播完歌，且為連續播放模式時保留 current_music_info_ 用來判定下一首不要重複，否則清空
+    if(!(complete_played && play_mode_ == PlayModeContinuous)){
+        current_music_info_ = MusicInfo{}; //重置內容
+    }
 
     codec->ResetOutputSampleRate(); //恢復原來的設定
 
@@ -800,3 +816,4 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     return true;
 }
+

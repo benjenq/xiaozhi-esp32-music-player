@@ -12,9 +12,9 @@
 
 基於 [78/xiaozhi-esp32 v2.2.3](https://github.com/78/xiaozhi-esp32/tree/b34a9b19baebfa17d8fcaa0ed494444aaba174e5) 的二次開發，支援播放 Subsonic API 串流音樂平台的聊天機器人，並支援
 - 歌詞同步顯示。
-- 連續播放模式。
+- 連續播放模式：當取得的歌曲數量超過 1 首時，會隨機選歌播放。
 
-***註：通電啟動時為「單曲模式」，可語音切換為「連續播放模式」。此設定不會儲存，重開機即重置為單曲模式***
+***註：啟動裝置時為「單曲模式」，可用語音切換為「連續模式」。設定值不會儲存在本體。***
 
 專案使用 `ESP-ADF` 開發套件中的 `audio_stream` 與 `audio_pipeline` 組件。因此編譯本專案時，編譯環境中必須安裝 `ESP-ADF`。
 
@@ -110,7 +110,7 @@ HttpMp3Player* music_player_ = nullptr;
 ```text
 收到音乐相关的需求时，只使用 MCP 工具 self.music.play_song，同时禁止使用 search_music 功能。播放成功时回覆播放讯息。
 
-收到设置播放模式相关需求时，使用 MCP 工具 self.music.set_play_mode 进行设置。设置成功时播放回覆讯息。
+收到设置播放模式相关需求时，务必使用 MCP 工具 self.music.set_play_mode 进行设置。设置成功时播放回覆讯息。
 
 ```
 
@@ -201,6 +201,7 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 | main/boards/common/board.h                            | 新增音樂播放器的虛擬介面                                                                         |
 | main/boards/common/board.cc                           | 同上                                                                                   |
 | main/boards/common/power_save_timer.cc                | 啟用電源管理程序時，播放音樂不進入省電模式判定                                                              |
+| main/boards/common/sleep_timer.cc                     | 啟用裝置睡眠模式時，播放音樂不進入省電模式判定
 
 [這裡](https://github.com/benjenq/xiaozhi-esp32-music-player/commit/6ec4ef7fcc7d4a1b56a6a167324ef183fa456824)可以查看具體修改了哪些部分。
 
