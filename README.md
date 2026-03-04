@@ -2,9 +2,9 @@
 
 ### 緣起
 
-剛接觸「小智 AI 聊天機器人」時，對於網路上看到第三方支援網路音樂串流的版本很感興趣。不過找到的開源專案（例如 [Maggotxy/xiaozhi-esp32-music](https://github.com/Maggotxy/xiaozhi-esp32-music)）多為較舊的 v1.8.5，且串流音樂位址似乎已失效。
+剛接觸「小智 AI 聊天機器人」時，對於網路上看到第三方支援網路串流音樂的版本很感興趣。不過找到的開源專案（例如 [Maggotxy/xiaozhi-esp32-music](https://github.com/Maggotxy/xiaozhi-esp32-music)）多為較舊的 v1.8.5，且串流音樂位址似乎已失效。
 
-因此，我個人嘗試改寫成支援 Subsonic API 的版本。好處是能自行透過開源軟體，在內網自架串流音樂平台。然而完成後發現，部分歌曲會不定時當機，或在播放第二首時容易崩潰；即使在第三方原始碼基礎上調整相關程式碼，在個人有限的程式能力和 AI 協助下，仍無法徹底解決。
+因此，我個人嘗試改寫成支援 Subsonic API 的版本。好處是能經由開源軟體，自行在內網架設串流音樂平台。然而完成後發現，部分歌曲會不定時當機，或在播放第二首時容易崩潰；即使在第三方原始碼基礎上調整相關程式碼，在個人有限的程式能力和 AI 協助下，仍無法徹底解決。
 
 基於以上種種原因，決定從蝦哥的源代碼（[78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)）開始進行二次開發，並參考先前第三方部分代碼，構建一套基於 v2.2.3 且能播放網路音樂串流的版本。
 
@@ -22,12 +22,17 @@
 
 實測支援 ESP32-S3 與 ESP32-C5、ESP32-C6，不支援最早期的 ESP32（資源不足），其他晶片未測試。使用 ESP-IDF 版本為 v5.5.2。
 
-- ESP32-C6 因效能問題，需關閉喚醒功能，否則播放音樂時會出現密集斷音、播放音樂緩慢的現象。且 C6 資源緊繃，連續播放中可能發生非預期崩潰現象。
+- ESP32-C6 因效能有限，需關閉提詞喚醒功能，否則播放音樂時會明顯不順。
+- 串流音樂平台使用 https 連線時：
+  - 未搭載使用 PSRAM 的裝置（如 ESP32-C6 ）可能無法順利播放。
+  - https 的 TLS 程序會消耗一定的 CPU 資源，實測 ESP32-S3 可能有偶爾的播放不順。
 
 ## 前提準備工作
 
 - 您已具備編譯 [`78/xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) 源代碼的能力。
+
 - 環境內已經安裝 `ESP-ADF`，並且能成功編譯 `ESP-ADF` 內提供的 [`pipeline_http_mp3`](https://gitee.com/EspressifSystems/esp-adf/tree/master/examples/player/pipeline_http_mp3) 或其他範例（[**ESP-ADF 官方文件**](https://docs.espressif.com/projects/esp-adf/zh_CN/latest/get-started/index.html#vs-code-extension)）。
+
 - 可以存取支援 Subsonic API 的網路音樂串流平台：
   - 可在內網使用免費開源的軟體（如 Navidrome、Gonic、Airsonic）架設音樂串流平台。
   - 或是互聯網上支援 Subsonic API 的網路音樂串流平台。
@@ -46,7 +51,7 @@
 
 - 因語言模型偏好簡體中文，建議中文歌曲的 ID3 標籤使用簡體填寫，以免搜尋不到。
   
-  註：Navidrome 的內建 Web 播放器，僅支援 mp3 的 ID3 內嵌歌詞，不支援外部 .lrc 歌詞顯示。所以請勿使用 Navidrome 內建 Web 播放器測試外掛歌詞功能。
+  *註：Navidrome 的內建 Web 播放器，僅支援 mp3 的 ID3 內嵌歌詞，不支援外部 .lrc 歌詞顯示。所以請勿使用 Navidrome 內建 Web 播放器測試外掛歌詞功能。*
 
 ## 如何使用本專案
 使用 `git clone` 指令下載專案源代碼
@@ -56,7 +61,8 @@ git clone https://github.com/benjenq/xiaozhi-esp32-music-player.git
 
 ### 1. 修改代碼
 
-所有的開發板（`waveshare-s3-touch-lcd-3.5b`除外）預設並未引入播放串流音樂的功能，需在對應的開發板上進行少量代碼修改進行啟用。可參考 [`waveshare-s3-touch-lcd-3.5b.cc`](main/boards/waveshare/esp32-s3-touch-lcd-3.5b/waveshare-s3-touch-lcd-3.5b.cc)）：
+所有的開發板（`waveshare-s3-touch-lcd-3.5b`除外）預設沒有引入播放串流音樂的功能，需在對應的開發板上進行少量代碼修改進行啟用。
+- 可參考 [`waveshare-s3-touch-lcd-3.5b.cc`](main/boards/waveshare/esp32-s3-touch-lcd-3.5b/waveshare-s3-touch-lcd-3.5b.cc)）：
 
 `#include`標頭段新增：
 
@@ -98,7 +104,7 @@ HttpMp3Player* music_player_ = nullptr;
 
 ### 2. 修改 menuconfig 內容：
 
-- Subsonic API 伺服器位址：根據實際情況填寫，有效的串流音樂平台網址，含埠號，以`/rest`結尾。
+- Subsonic API 伺服器位址：根據實際情況填寫有效的串流音樂平台網址，含埠號，以`/rest`結尾，例如 `http://192.168.0.101:4533/rest`
 - Subsonic API 的基本參數：有兩種固定格式，擇一：
   - `u=帳號&p=密碼&s=raw&v=1.16.1&c=xiaozhi`
   - `u=帳號&s=任意字串&t=密碼結合任意字串的MD5生成碼&v=1.16.1&c=xiaozhi`
@@ -109,16 +115,9 @@ HttpMp3Player* music_player_ = nullptr;
 
 ```text
 收到音乐相关的需求时，只使用 MCP 工具 self.music.play_song，同时禁止使用 search_music 功能。播放成功时回覆播放讯息。
-
-收到设置播放模式相关需求时，务必使用 MCP 工具 self.music.set_play_mode 进行设置。设置成功时播放回覆讯息。
-
 ```
 
 強迫機器人關閉內建的雲端音樂播放功能，執行指定的音樂流播放工具。
-
-播放模式切換：
-- *使用「設置單曲模式」、「設置連播模式」等類似命令切換。*
-- *有時 AI 會假回覆但其實沒有使用 MCP 設置，要注意一下*
 
 ### 4. ESP-ADF 的補完，以及 ESP-IDF 的修正
 
@@ -172,6 +171,28 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
   X.X 為 ESP-IDF 的版本。
 
 ### 逐一完成上述的操作，便可編譯和刷寫本專案韌體。
+
+## 使用操作
+
+播放音樂：說出自然語言命令
+
+```text
+我想聽周董的歌
+播放五月天的音樂
+播放周杰倫的花海
+...
+```
+
+播放模式切換：
+- 使用`「設置單曲模式」`、`「設置連播模式」`等類似命令切換。
+- 有時 AI 會假回覆但其實沒有調用 MCP，命令加上「工具」可改善這個問題，如`「工具設置連播模式」`。
+
+單曲模式：
+- 播放一首歌結束後，會進入聆聽命令模式，等待語音命令。
+
+連續播放模式：
+- 只要有找到歌，就會一直播放。音樂超過兩首時，會隨機選取。
+- 用 BOOT 按鈕中斷連續播放。
 
 ## 其他說明
 

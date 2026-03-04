@@ -13,6 +13,7 @@
 #include "http_stream.h"
 #include "mp3_decoder.h"
 #include "raw_stream.h"
+#include <esp_crt_bundle.h> //當串流平台是 https 時，http_stream 使用 TLS
 
 #include "mcp_server.h"
 
@@ -150,6 +151,23 @@ static std::string url_encode(const std::string &str)
         }
     }
     return encoded;
+}
+
+//解析 url ，賦予 protocol 值 http / https
+bool parse_url_protocol(const std::string &url, std::string &protocol){
+    protocol.clear();   // 先清空輸出參數
+    size_t protocol_end = url.find("://");
+    if (protocol_end == std::string::npos) {
+        ESP_LOGE(TAG, "Invalid URL format: %s", url.c_str());
+        return false;
+    }
+    protocol = url.substr(0, protocol_end);
+    std::transform(protocol.begin(), protocol.end(), protocol.begin(), ::tolower);
+    if (protocol != "http" && protocol != "https") {     //支援 http 與 https
+        ESP_LOGE(TAG, "Unsupported protocol: %s", protocol.c_str());
+        return false;
+    }
+    return true;
 }
 
 bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& artist_name, std::string& query_result){
@@ -522,12 +540,20 @@ void HttpMp3Player::streaming_task(void* arg)
 
 bool HttpMp3Player::start_streaming_pipeline(){
     #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C5 / C6 ，不支援最早的 ESP32"
+    #warning "音樂串流平台若為 https://，裝置需要 PSRAM 否則 audio pipeline 可能會記憶體不足而跳出"
 
     if (current_music_info_.mp3_url.empty())
     {
         ESP_LOGE(TAG, "Music URL is empty");
         return false;
     }
+    // 判斷是否 https
+    std::string protocol_ ; //賦與值 http 或 https
+    if (!parse_url_protocol(current_music_info_.mp3_url,protocol_)){
+        ESP_LOGE(TAG, "parse_url_protocol error!");
+        return false;
+    }
+
     auto &app = Application::GetInstance();
     ESP_LOGW(TAG, "等待小智囉唆完畢....");
     while(app.GetDeviceState() == kDeviceStateSpeaking){
@@ -535,12 +561,14 @@ bool HttpMp3Player::start_streaming_pipeline(){
     }
 
     while(app.GetDeviceState() == kDeviceStateListening){
-        ESP_LOGI(TAG, "切換至待機狀態，以免邊播歌邊插嘴...");
+        ESP_LOGI(TAG, "切換至待機狀態，以免小智邊播歌邊插嘴...");
         app.ToggleChatState();
         vTaskDelay(pdMS_TO_TICKS(300));
     }
+
     is_playing_ = true;
     stop_flag_ = false;
+    
     auto &board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE); //避免待機時 WIFI 進入低功耗導致網路降速
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -566,6 +594,17 @@ bool HttpMp3Player::start_streaming_pipeline(){
     ESP_LOGI(TAG, "[2.1] Create http stream to get data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
     http_cfg.task_prio = pipeline_task_prio_; //解決 ESP32 C5 出現看門狗警告、下載卡頓。
+    if (protocol_ == "https") {
+        //Subsonic API 採用 HTTPS，CPU 負載提高且需更大緩衝區。
+        ESP_LOGW(TAG, "[2.1.1] Subsonic API uses HTTPS/TLS, increasing CPU load and requiring larger buffers for stable playback");
+        http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+#if defined(CONFIG_SPIRAM)
+        //具備 PSRAM，可擴大 TCP 緩衝與 ring buffer，改善 HTTPS 播放順暢度。
+        ESP_LOGI(TAG, "[2.1.2] PSRAM available: increasing TCP request size and ringbuffer for smoother HTTPS playback");
+        http_cfg.request_size = 32 * 1024;
+        http_cfg.out_rb_size  = 64 * 1024;
+#endif
+    }
     http_stream_reader = http_stream_init(&http_cfg);
 
     ESP_LOGI(TAG, "[2.2] Create mp3 decoder to decode mp3 data");
@@ -697,7 +736,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
             // 只有在「真的乾了(fill_level < 4 * 1024)」或是「正在補水且還沒補滿(is_buffering)」時才停下來
             if(fill_level < ((4 * 1024 < PREBUFFER_THRESHOLD / 2) ? (4 * 1024) : (PREBUFFER_THRESHOLD / 2)) ){
                 ESP_LOGI(TAG, "預緩衝中... %d/%d", fill_level, PREBUFFER_THRESHOLD);
-                vTaskDelay(pdMS_TO_TICKS(25));
+                vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
         }
