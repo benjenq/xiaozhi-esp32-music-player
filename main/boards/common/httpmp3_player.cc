@@ -23,7 +23,7 @@ const int pipeline_task_prio_ = 10;
 const std::string base_url = CONFIG_SUBSONICAPI_URL;
 const std::string subsonic_api_para = CONFIG_SUBSONICAPI_PARA; //"u=admin&p=1111&s=raw&v=1.16.1&c=xiaozhi";
 
-bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::string& response, std::string& query_result);
+bool http_get_response(std::string& full_url, std::string& response, std::string& query_result);
 
 HttpMp3Player::HttpMp3Player(){
     auto& mcp_server = McpServer::GetInstance();
@@ -106,10 +106,8 @@ HttpMp3Player::~HttpMp3Player(){
     
 }
 
-bool HttpMp3Player::Play() {
-    return start_playing();
-}
 bool HttpMp3Player::PauseResume() {
+    //尚未實作
     return true;
 }
 bool HttpMp3Player::Stop() {
@@ -171,18 +169,9 @@ bool parse_url_protocol(const std::string &url, std::string &protocol){
 }
 
 bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& artist_name, std::string& query_result){
-
     ESP_LOGI(TAG, "查詢歌手: %s, 歌曲名: %s", artist_name.c_str(), song_name.c_str());
-    std::string full_query_song_url = base_url + "/search3.view?" + subsonic_api_para + "&f=json&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
-    ESP_LOGI(TAG, "查詢位址 URL: %s", full_query_song_url.c_str());
-
-    if(!http_){
-        auto network = Board::GetInstance().GetNetwork();
-        http_ = network->CreateHttp(0);
-        http_->SetTimeout(1500);
-    }    
-    // 經查詢結果產生歌曲資訊
-    if (!create_music_info(http_, song_name,artist_name,query_result)){
+    // 經查詢結果產生歌曲資訊 current_music_info_
+    if (!create_music_info(song_name,artist_name,query_result)){
         ESP_LOGW(TAG, "create_music_info 錯誤！");
         return false;
     }
@@ -191,7 +180,7 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
 
     std::string lyric_response;
     std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(current_music_info_.song_id);
-    if (http_get_response(http_, full_query_lyric_url, lyric_response, query_result)){
+    if (http_get_response(full_query_lyric_url, lyric_response, query_result)){
         if(!parse_response_to_lyric(lyric_response, query_result)){
             ESP_LOGE(TAG, "歌詞回應解析失敗！");
         }
@@ -202,7 +191,6 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
 
     ESP_LOGI(TAG, "開始播放歌曲: %s, 歌手: %s", current_music_info_.title.c_str(), current_music_info_.artist.c_str());
     if(play_mode_ == PlayModeContinuous){
-        int count = (int)playlists.size();
         query_result = "開始隨機播放歌曲:《" + current_music_info_.title + "》等 " + std::to_string(playlists.size()) + " 首歌。";
         auto *display = Board::GetInstance().GetDisplay();
         auto &app = Application::GetInstance();
@@ -217,9 +205,9 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
     else{
         query_result = "開始播放歌曲: " + current_music_info_.title + " ,歌手: " + current_music_info_.artist;
     }
-    bool success = start_playing();
+    bool success = Play();
     if(!success){
-        ESP_LOGE(TAG, "start_playing() 失敗！");
+        ESP_LOGE(TAG, "Play() 失敗！");
         return false;
     }
     return true;
@@ -239,16 +227,12 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool HttpMp3Player::create_music_info(std::unique_ptr<Http> &http, const std::string& song_name, const std::string& artist_name, std::string& query_result){
-    if(!http){
-        ESP_LOGE(TAG, "HTTP 未初始化錯誤！");
-        return false;
-    }
+bool HttpMp3Player::create_music_info(const std::string& song_name, const std::string& artist_name, std::string& query_result){
     std::string full_query_song_url = base_url + "/search3.view?" + subsonic_api_para + "&f=json&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
     ESP_LOGI(TAG, "查詢位址 URL: %s", full_query_song_url.c_str());
     // 使用Board提供的HTTP客户端    
     std::string s_response;
-    if (!http_get_response(http, full_query_song_url, s_response, query_result)){
+    if (!http_get_response(full_query_song_url, s_response, query_result)){
         ESP_LOGE(TAG, "取得回應失敗！");
         return false;
     }
@@ -282,7 +266,10 @@ bool HttpMp3Player::create_music_info(std::unique_ptr<Http> &http, const std::st
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::string& response, std::string& query_result){
+bool http_get_response(std::string& full_url, std::string& response, std::string& query_result){
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(0);
+    http->SetTimeout(1500);
     // 打开GET连接
     if (!http->Open("GET", full_url))
     {
@@ -305,6 +292,7 @@ bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::
     ESP_LOGI("HTTP", "Body length: %u", len); //0: chunk 模式
     //std::string response = http->ReadAll();  會卡死沒回應，感謝 ChatGPT，說要用 http->Read
 
+    response.clear();
     char buf[1024];
     int n;
     while ((n = http->Read(buf, sizeof(buf))) > 0) {
@@ -317,20 +305,17 @@ bool http_get_response(std::unique_ptr<Http> &http, std::string& full_url, std::
         return false;
     }
     http->Close();
-    ESP_LOGI(TAG, "HTTP read finished, total %u bytes", response.size());
+    ESP_LOGW(TAG, "HTTP read finished, total %u bytes", response.size());
 
     ESP_LOGD(TAG, "回應 response = %s", response.c_str());
     return true;
 }
 
 /**
- * @brief 解析 response 內容
- *
- * 傳入 response 內容，解析結果寫入 _current_music_info
+ * @brief 解析 response 內容，寫入 _current_music_info
  * 
- 
- * @param response          已建立的 Http 物件引用
- * @param query_result  回傳的額外處理資料
+ * @param response      回應內容（從外部傳入）
+ * @param query_result  結果
  *
  * @return true         請求成功
  * @return false        請求失敗
@@ -392,7 +377,15 @@ bool HttpMp3Player::parse_response_to_musicinfo(std::string& response, std::stri
     cJSON_Delete(response_json);
     return _has_result;
 }
-
+/**
+ * @brief 解析 response 內容，結果寫入 current_music_info_.lyrics
+ * 
+ * @param response      回應內容（從外部傳入）
+ * @param query_result  處理結果
+ *
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
 bool HttpMp3Player::parse_response_to_lyric(std::string& response, std::string& query_result){
     cJSON *response_json = cJSON_Parse(response.c_str());
     if (!response_json){
@@ -446,7 +439,6 @@ bool HttpMp3Player::parse_response_to_lyric(std::string& response, std::string& 
 }
 
 void HttpMp3Player::continuous_playing(){
-
     int song_count = playlists.size();
     if (song_count <= 0){
         ESP_LOGE(TAG, "playlists 沒有歌曲！");
@@ -472,7 +464,7 @@ void HttpMp3Player::continuous_playing(){
             http_ = network->CreateHttp(0);
             http_->SetTimeout(1500);
         }
-        if (http_get_response(http_, full_query_lyric_url, lyric_response, query_result)){
+        if (http_get_response(full_query_lyric_url, lyric_response, query_result)){
             if(!parse_response_to_lyric(lyric_response, query_result)){
                 ESP_LOGE(TAG, "歌詞回應解析失敗！");
             }
@@ -480,13 +472,13 @@ void HttpMp3Player::continuous_playing(){
         else{
             ESP_LOGE(TAG, "取得歌詞回應失敗！");
         }
-        start_playing();
+        Play();
     } catch (const std::out_of_range& e) {
         ESP_LOGE(TAG, "Out of range: %s", e.what() );
     }
     
 }
-bool HttpMp3Player::start_playing()
+bool HttpMp3Player::Play()
 {
     if (current_music_info_.mp3_url.empty()) {
         ESP_LOGE(TAG, "_current_music_info.mp3_url.empty()");
@@ -540,7 +532,7 @@ void HttpMp3Player::streaming_task(void* arg)
 
 bool HttpMp3Player::start_streaming_pipeline(){
     #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C5 / C6 ，不支援最早的 ESP32"
-    #warning "音樂串流平台若為 https://，裝置需要 PSRAM 否則 audio pipeline 可能會記憶體不足而跳出"
+    #warning "音樂串流平台若為 https://，裝置需要 PSRAM ，否則 audio pipeline 可能因記憶體不足而跳出"
 
     if (current_music_info_.mp3_url.empty())
     {
@@ -550,7 +542,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
     // 判斷是否 https
     std::string protocol_ ; //賦與值 http 或 https
     if (!parse_url_protocol(current_music_info_.mp3_url,protocol_)){
-        ESP_LOGE(TAG, "parse_url_protocol error!");
+        ESP_LOGE(TAG, "parse_url_protocol error! 不支援的網址！");
         return false;
     }
 

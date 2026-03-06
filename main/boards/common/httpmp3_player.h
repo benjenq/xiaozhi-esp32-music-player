@@ -30,7 +30,7 @@ public: //Misic override
     ~HttpMp3Player() override;
 
     bool Play() override;
-    bool PauseResume() override;
+    bool PauseResume() override; //尚未實作
     bool Stop() override ;
     bool IsPlaying() override;
 
@@ -47,10 +47,9 @@ private:
     PlayMode play_mode_ = PlayModeSingle; //播放模式
     std::vector<std::string> playlists = {}; //播放的曲目清單
 
-    bool create_music_info(std::unique_ptr<Http> &http, const std::string& song_name, const std::string& artist_name, std::string& query_result);
+    bool create_music_info(const std::string& song_name, const std::string& artist_name, std::string& query_result);
     bool parse_response_to_musicinfo(std::string& response, std::string& query_result);
     bool parse_response_to_lyric(std::string& response, std::string& query_result);
-    bool start_playing();
     void continuous_playing(); //連續播放模式入口
     static void streaming_task(void* arg);
     bool start_streaming_pipeline();
