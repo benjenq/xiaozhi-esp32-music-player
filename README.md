@@ -188,7 +188,7 @@ HttpMp3Player* music_player_ = nullptr;
 ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 需要修正，否則組件的功能可能會發生異常。修正的指令位於 `esp-adf/idf_patches` 內：
 
 - 須根據 ESP-IDF 的版本，選擇對應的修正指令。
-- 修正的指令為：
+- 修正的指令為 *(以下是 macOS 環境變數)*：
   
   ```shell
   cd $IDF_PATH
