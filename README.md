@@ -192,9 +192,9 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
   
   ```shell
   cd $IDF_PATH
-  git apply $ADF_PATH/idf_patches/idf_vX.X_freertos.patch
+  git apply $ADF_PATH/idf_patches/idf_vX.X_freertos.patch --ignore-space-change
   ```
-  X.X 為 ESP-IDF 的版本。
+  X.X 為 ESP-IDF 的版本。個人實測 ESP-IDF v5.5.2 版有效。
 
 ### 逐一完成上述的操作，便可編譯和刷寫本專案韌體。
 
