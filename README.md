@@ -53,32 +53,6 @@
   
   *註：Navidrome 的內建 Web 播放器，僅支援 mp3 的 ID3 內嵌歌詞，不支援外部 .lrc 歌詞顯示。所以請勿使用 Navidrome 內建 Web 播放器測試外掛歌詞功能。*
 
-### **使用 Apache2 反向代理音樂串流平台的注意事項**
-若使用 Apache2 反向代理音樂串流平台（如 Navidrome），數據傳輸模式將自動改為 `transfer-encoding : chunked`，可能會觸發 `78/esp-ml307` 組件 *(目前為v3.6.4)* 處理 chunk 邏輯的 BUG，硬生生將 API 查詢結果 JSON 截斷至 8192 bytes，導致 JSON 結構損毀而解析失敗。
-
-解決方式：修改 `managed_components\78__esp-ml307\src\http_client.cc`
-- 找到 `void HttpClient::ProcessReceivedData()` 方法內的 `case ParseState::CHUNK_SIZE:` 區段，依照以下方式修改：
-
-```cpp
-case ParseState::CHUNK_SIZE: {
-    if (!HasCompleteLine(rx_buffer_)) return; 
-
-    std::string line = GetNextLine(rx_buffer_);
-
-    // --- 新增這段：跳過 Chunk 之間的空行 ---
-    if (line.empty()) {
-        // 如果是空行，代表剛讀完上一個 Chunk 的結尾 \r\n，再讀下一行才是真正的 Size
-        if (!HasCompleteLine(rx_buffer_)) return;
-        line = GetNextLine(rx_buffer_);
-    }
-    // --- 新增結束-------------------------
-
-    chunk_size_ = ParseChunkSize(line);
-    // ... 後續邏輯
-}
-```
-*註： 若執行 `idf.py fullclean` 或任何刪除 `managed_components` 並重新下載的操作，則需要再修正一次 `http_client.cc`。*
-
 ## 如何使用本專案
 使用 `git clone` 指令下載專案源代碼
 ```shell
