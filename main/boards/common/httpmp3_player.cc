@@ -228,7 +228,7 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
  * @return false        請求失敗
  */
 bool HttpMp3Player::create_music_info(const std::string& song_name, const std::string& artist_name, std::string& query_result){
-    std::string full_query_song_url = base_url + "/search3.view?" + subsonic_api_para + "&f=json&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
+    std::string full_query_song_url = base_url + "/search2.view?" + subsonic_api_para + "&f=json&artistCount=0&albumCount=0&songCount=30&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
     ESP_LOGI(TAG, "查詢位址 URL: %s", full_query_song_url.c_str());
     // 使用Board提供的HTTP客户端    
     std::string s_response;
@@ -305,7 +305,7 @@ bool http_get_response(std::string& full_url, std::string& response, std::string
         return false;
     }
     http->Close();
-    ESP_LOGW(TAG, "HTTP read finished, total %u bytes", response.size());
+    ESP_LOGI(TAG, "HTTP read finished, total %u bytes", response.size());
 
     ESP_LOGD(TAG, "回應 response = %s", response.c_str());
     return true;
@@ -328,7 +328,7 @@ bool HttpMp3Player::parse_response_to_musicinfo(std::string& response, std::stri
         return false;
     }
     cJSON *subsonic = cJSON_GetObjectItem(response_json, "subsonic-response");
-    cJSON *search   = cJSON_GetObjectItem(subsonic, "searchResult3");
+    cJSON *search   = cJSON_GetObjectItem(subsonic, "searchResult2");
     cJSON *songs    = cJSON_GetObjectItem(search, "song");
 
     cJSON* title = nullptr;

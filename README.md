@@ -20,13 +20,21 @@
 
 此外，ESP-ADF 需補完 `config AUDIO_BOARD_CUSTOM` 的設置，以及 ESP-IDF 也必須進行修正。
 
-實測支援 ESP32-S3 與 ESP32-C5、ESP32-C6，不支援最早期的 ESP32（資源不足），其他晶片未測試。使用 ESP-IDF 版本為 v5.5.2。
+實測支援 ESP32-S3 與 ESP32-C5、ESP32-C6，不支援最早期的 ESP32（資源不足），其他晶片未測試。使用 ESP-IDF 版本為 v5.5.2/v5.5.3。
 
-- ESP32-C6 因效能有限，需關閉提詞喚醒功能，否則會出現明顯不順、播到一半中斷等情況。
-- 串流音樂平台使用 https 連線時：
-  - 未搭載使用 PSRAM 的裝置（如 ESP32-C6 ）可能無法順利播放。
-  - ESP32-C6 的 `display style` 使用預設風格即可，不要啟用微信聊天風格（很吃記憶體，https 容易串流失敗）。
-  - https 的 TLS 程序會消耗一定的 CPU 資源，可能有偶爾的播放不順。
+### 提醒事項
+
+**1. Flash 容量建議 8MB 以上。**
+
+**2. ESP32-C6 因效能有限，需做以下調整：**
+- 關閉提詞喚醒功能，
+- 顯示風格(`display style`) 選擇 `Enabled default message style`（不使用微信對話風格）。
+
+否則 ESP32-C6 容易出現間音樂歇性斷音，突發中斷等情況。
+
+**3. 串流音樂平台使用 https 連線時：**
+- 未搭載使用 PSRAM 的裝置（如 ESP32-C6 ）可能無法順利播放。
+- https 的 TLS 程序會消耗一定的 CPU 資源，實測 ESP32-S3 可能會出現偶爾播放斷音。
 
 ## 前提準備工作
 
@@ -163,11 +171,11 @@ HttpMp3Player* music_player_ = nullptr;
 ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 需要修正，否則組件的功能可能會發生異常。修正的指令位於 `esp-adf/idf_patches` 內：
 
 - 須根據 ESP-IDF 的版本，選擇對應的修正指令。
-- 修正的指令為 *(以下是 macOS 環境變數)*：
+- 修正的指令為 *(以下是 macOS 環境變數為例)*：
   
   ```shell
   cd $IDF_PATH
-  git apply $ADF_PATH/idf_patches/idf_vX.X_freertos.patch --ignore-space-change
+  git apply --ignore-space-change $ADF_PATH/idf_patches/idf_vX.X_freertos.patch
   ```
   X.X 為 ESP-IDF 的版本。個人實測 ESP-IDF v5.5.2 版有效。
 
