@@ -17,13 +17,48 @@
 
 #include "mcp_server.h"
 
+//#include "esp_heap_caps.h"
+
 #define TAG "HttpMp3Player"
+
+/**
+ * @brief deserializeJson 時使用此類物件，並搭配 filter 時，可實現串流解析 JSON 並大幅縮小 Subsonic API 的 JSON 體積 
+ */
+class HttpStreamReader {
+public:
+    HttpStreamReader(Http* http)
+    {
+        _http = http;
+        _pos = 0;
+        _len = 0;
+    }
+
+    int read()
+    {
+        if (_pos >= _len)
+        {
+            _len = _http->Read(_buffer, sizeof(_buffer));
+            _pos = 0;
+
+            if (_len <= 0)
+                return -1;
+        }
+
+        return _buffer[_pos++];
+    }
+private:
+    Http* _http;
+
+    static const int BUFFER_SIZE = 512;
+    char _buffer[BUFFER_SIZE];
+
+    int _pos;
+    int _len;
+};
 
 const int pipeline_task_prio_ = 10;
 const std::string base_url = CONFIG_SUBSONICAPI_URL;
 const std::string subsonic_api_para = CONFIG_SUBSONICAPI_PARA; //"u=admin&p=1111&s=raw&v=1.16.1&c=xiaozhi";
-
-bool http_get_response(std::string& full_url, std::string& response, std::string& query_result);
 
 HttpMp3Player::HttpMp3Player(){
     auto& mcp_server = McpServer::GetInstance();
@@ -35,11 +70,11 @@ HttpMp3Player::HttpMp3Player(){
             "使用规则:\n"
             "  用户未提到明确的主唱、艺术家、歌曲名称，相关栏位以空字串符替代。\n"
             "返回:\n"
-            "  播放状态信息，不需确认，立刻播放歌曲。\n"
+            "  播放状态信息，不需确认。\n"
             "范例:\n"
-            "  '播放五月天的倔强'\n"
+            "  '播放五月天的任性'\n"
             "  '我想听周董的歌'\n"
-            "  '帮我随便挑一首歌，歌名歌手随意'\n", 
+            "  '随机挑几首歌来播放'\n", 
         PropertyList({
                  Property("song_name", kPropertyTypeString),//歌曲名称（必需）
                  Property("artist_name", kPropertyTypeString, "")//艺术家名称（可选，默认为空字符串）
@@ -49,7 +84,7 @@ HttpMp3Player::HttpMp3Player(){
             auto song_name = properties["song_name"].value<std::string>();
             auto artist_name = properties["artist_name"].value<std::string>();
             std::string message;
-            if (!this->QuerySong(song_name, artist_name, message)) {
+            if (!this->QueryAndPlay(song_name, artist_name, message)) {
                 return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
             }
             ESP_LOGI(TAG, "Music details result: %s", message.c_str());
@@ -58,23 +93,22 @@ HttpMp3Player::HttpMp3Player(){
     ESP_LOGI(TAG, "HttpMp3Player with MCP Tools `self.music.play_song` created.");
     //播放模式設定
     mcp_server.AddTool("self.music.set_play_mode",
-            "装置支援音乐播放，此工具可设置本设备对应的播放模式，可以选择单曲播放模式(播放一首后停止)或连续播放模式(持续播放不同歌曲)。\n"
+            "使用此工具设置对应的播放模式，可以选择单曲播放模式(播放一首后停止)或连续播放模式(持续播放不同歌曲)。\n"
             "参数:\n"
             "  `playmode`: 播放模式，可选值为 'single'(单曲）或 'continuous'（连续）。\n"
             "返回:\n"
             "  设置结果信息。\n"
             "使用規則:\n"
-            "  当用户提到'设定播放模式'或类似需求时时使用，用户需求可参照范例。\n"
+            "  当用户提出'设定播放模式'或类似需求时使用，用户需求可参照范例。\n"
             "范例:\n"
             "  '单曲模式'\n"
             "  '单曲播放'\n"
             "  '设置单曲模式'\n"
             "  '设定单曲模式'\n"
-            "  '单曲播放'\n"
             "  '设置连播模式'\n"
             "  '设定轮播模式'\n"
             "  '连续模式'\n"
-            "  '连续播放'\n"
+            "  '连续播放模式'\n"
             "  '循环模式'\n"
             "  '连播模式'\n",
             PropertyList({
@@ -168,35 +202,138 @@ bool parse_url_protocol(const std::string &url, std::string &protocol){
     return true;
 }
 
-bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& artist_name, std::string& query_result){
-    ESP_LOGI(TAG, "查詢歌手: %s, 歌曲名: %s", artist_name.c_str(), song_name.c_str());
-    // 經查詢結果產生歌曲資訊 current_music_info_
-    if (!create_music_info(song_name,artist_name,query_result)){
-        ESP_LOGW(TAG, "create_music_info 錯誤！");
+/**
+ * 
+ * @brief 將 Subsonic API 回應 JSON 轉為 DynamicJsonDocument 格式，並透過 deserializeJson 實現串流解析 JSON 。
+ * @note 使用 ArduinoJson 與自訂 HttpStreamReader
+ * 
+ * @param full_url      要請求的完整 URL
+ * @param response      回傳的原始內容
+ *
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
+bool get_subsonic_response(std::string& full_url,DynamicJsonDocument &response)
+{
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(0);
+
+    http->SetTimeout(1500);
+
+    // 開啟 HTTP
+    if (!http->Open("GET", full_url))
+    {
+        ESP_LOGE(TAG, "HTTP open failed");
         return false;
     }
 
-    current_music_info_.mp3_url =  base_url + "/stream.view?" + subsonic_api_para + "&id=" + url_encode(current_music_info_.song_id) ;
+    int status = http->GetStatusCode();
 
-    std::string lyric_response;
-    std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(current_music_info_.song_id);
-    if (http_get_response(full_query_lyric_url, lyric_response, query_result)){
-        if(!parse_response_to_lyric(lyric_response, query_result)){
-            ESP_LOGE(TAG, "歌詞回應解析失敗！");
-        }
+    if (status != 200)
+    {
+        ESP_LOGE(TAG, "HTTP status %d", status);
+        http->Close();
+        return false;
     }
-    else{
-        ESP_LOGE(TAG, "取得歌詞回應失敗！");
+
+    ESP_LOGI(TAG, "Start streaming JSON...");
+    // JSON filter（只取需要欄位）
+    StaticJsonDocument<256> filter;
+
+    //三種查詢過濾器寫在一起即可
+    //歌曲查詢
+    filter["subsonic-response"]["searchResult2"]["song"][0]["id"] = true;
+    filter["subsonic-response"]["searchResult2"]["song"][0]["title"] = true;
+    filter["subsonic-response"]["searchResult2"]["song"][0]["artist"] = true;
+    filter["subsonic-response"]["searchResult2"]["song"][0]["coverArt"] = true;
+    filter["subsonic-response"]["searchResult2"]["song"][0]["channelCount"] = true;
+    filter["subsonic-response"]["searchResult2"]["song"][0]["samplingRate"] = true;
+    //隨機歌曲
+    filter["subsonic-response"]["randomSongs"]["song"][0]["id"] = true;
+    filter["subsonic-response"]["randomSongs"]["song"][0]["title"] = true;
+    filter["subsonic-response"]["randomSongs"]["song"][0]["artist"] = true;
+    filter["subsonic-response"]["randomSongs"]["song"][0]["coverArt"] = true;
+    filter["subsonic-response"]["randomSongs"]["song"][0]["channelCount"] = true;
+    filter["subsonic-response"]["randomSongs"]["song"][0]["samplingRate"] = true;
+
+    //歌詞過濾器
+    filter["subsonic-response"]["lyricsList"]["structuredLyrics"][0]["line"][0]["start"] = true;
+    filter["subsonic-response"]["lyricsList"]["structuredLyrics"][0]["line"][0]["value"] = true;
+    // 建立 reader
+    HttpStreamReader http_reader(http.get());
+
+    // 直接從 HTTP stream 解析 JSON
+    DeserializationError err = deserializeJson(response, http_reader, DeserializationOption::Filter(filter));
+    http->Close(); //<-- 這裡關掉是安全的
+
+    if (err)
+    {
+        ESP_LOGE(TAG, "JSON parse error: %s", err.c_str());
+        return false;
+    }
+    /* TEST: 取得 song array
+    JsonArray arr = response["subsonic-response"]["randomSongs"]["song"].as<JsonArray>();
+
+    if (!arr || arr.size() == 0) {
+        ESP_LOGE(TAG, "JSON parse error: %s", err.c_str());
+    } */
+    return true;
+}
+
+/**
+ * @brief 根據 song_id 生成 Subsonic API 播放連結 。
+ * 
+ * @param song_id       歌曲 id
+ *
+ * @return std::string  播放連結
+ */
+std::string build_stream_url(const std::string &song_id){
+    return base_url + "/stream.view?" + subsonic_api_para + "&id=" + url_encode(song_id);
+}
+
+std::string build_cover_url(const std::string &cover_id){
+    return base_url + "/getCoverArt.view?" + subsonic_api_para + "&size=240&id=" + url_encode(cover_id);
+}
+/**
+ * 
+ * @brief 主要播放入口。藉由歌曲名/歌手名，查詢的結果進行播放
+ * 
+ * @param song_name      查詢的歌曲名稱
+ * @param artist_name    查詢的歌手名稱
+ * @param query_result  結果文字，回傳給小智參考
+ *
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
+bool HttpMp3Player::QueryAndPlay(const std::string& song_name, const std::string& artist_name, std::string& query_result){
+    ESP_LOGI(TAG, "查詢歌手: %s, 歌曲名: %s", artist_name.c_str(), song_name.c_str());
+    auto& app = Application::GetInstance();
+    auto* display = Board::GetInstance().GetDisplay();
+    // 經查詢結果產生歌曲資訊 current_music_info_
+    if (!get_music_info(song_name,artist_name)){
+        ESP_LOGW(TAG, "create_music_info 錯誤！");
+        query_result = "沒有歌曲：【" + song_name + "】，歌手【" + artist_name + "】";
+        app.Schedule([display, query_result]() {
+            display->SetChatMessage("assistant", query_result.c_str());
+        });
+        return false;
+    }
+
+    current_music_info_.mp3_url =  build_stream_url(current_music_info_.song_id);
+
+    if(!get_song_lyrics(current_music_info_.song_id)){
+        std::string msg = "【" + current_music_info_.title + "】沒有歌詞!";
+        ESP_LOGW(TAG, "%s", msg.c_str());
     }
 
     ESP_LOGI(TAG, "開始播放歌曲: %s, 歌手: %s", current_music_info_.title.c_str(), current_music_info_.artist.c_str());
     if(play_mode_ == PlayModeContinuous){
-        query_result = "開始隨機播放歌曲:《" + current_music_info_.title + "》等 " + std::to_string(playlists.size()) + " 首歌。";
+        query_result = "開始隨機播放歌曲:《" + current_music_info_.title + "》等 " + std::to_string(playlists_.size()) + " 首歌。";
+        //std::string msg = "《找到 " + std::to_string((int)playlists_.size()) + " 首歌》";
+        char msg[30];
+        snprintf(msg, sizeof(msg), Lang::Strings::NUM_SONGS_FOUND, playlists_.size());
         auto *display = Board::GetInstance().GetDisplay();
         auto &app = Application::GetInstance();
-        //std::string msg = "《找到 " + std::to_string((int)playlists.size()) + " 首歌》";
-        char msg[30];
-        snprintf(msg, sizeof(msg), Lang::Strings::NUM_SONGS_FOUND, playlists.size());
         app.Schedule([display, msg]() {
             display->SetChatMessage("assistant", msg);
         });
@@ -208,269 +345,190 @@ bool HttpMp3Player::QuerySong(const std::string& song_name, const std::string& a
     bool success = Play();
     if(!success){
         ESP_LOGE(TAG, "Play() 失敗！");
+        query_result = "播放音樂失敗！";
         return false;
     }
     return true;
 }
 
 /**
- * @brief 透過 HTTP 建立 current_music_info_ 與 playlists
+ * @brief 透過查詢條件（歌曲/歌手），建立 current_music_info_ 與 playlists_
  *
- * 這個函式使用提供的 Http 物件，對指定 URL 發出 GET 請求，
- * 並將回傳內容寫入 response 和 query_result。
- *
- * @param http          已建立的 Http 物件引用
- * @param full_url      要請求的完整 URL
- * @param response      回傳的原始內容
- * @param query_result  結果文字
+ * @param song_name      歌曲名稱
+ * @param artist_name    演唱者/藝術家
  *
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool HttpMp3Player::create_music_info(const std::string& song_name, const std::string& artist_name, std::string& query_result){
-    std::string full_query_song_url = base_url + "/search2.view?" + subsonic_api_para + "&f=json&artistCount=0&albumCount=0&songCount=30&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
+bool HttpMp3Player::get_music_info(const std::string& song_name, const std::string& artist_name){
+    std::string full_query_song_url;
+    bool random = false;
+    if(song_name == "" && artist_name == ""){
+        random = true;
+        full_query_song_url = base_url + "/getRandomSongs.view?" + subsonic_api_para + "&f=json&size=100";
+    }
+    else{
+        full_query_song_url = base_url + "/search2.view?" + subsonic_api_para + "&f=json&artistCount=0&albumCount=0&songCount=100&query=" + url_encode(song_name) + url_encode(" ") + url_encode(artist_name);
+    }
     ESP_LOGI(TAG, "查詢位址 URL: %s", full_query_song_url.c_str());
-    // 使用Board提供的HTTP客户端    
-    std::string s_response;
-    if (!http_get_response(full_query_song_url, s_response, query_result)){
-        ESP_LOGE(TAG, "取得回應失敗！");
+
+    DynamicJsonDocument doc(4096);
+    if(!get_subsonic_response(full_query_song_url, doc)){
+        ESP_LOGE(TAG, "取得歌曲回應失敗！");
         return false;
     }
-
-    if (!parse_response_to_musicinfo(s_response, query_result))
-    {
-        auto& app = Application::GetInstance();
-        auto* display = Board::GetInstance().GetDisplay();
-        ESP_LOGE(TAG, "Audio URL not found or empty for song: %s", song_name.c_str());
-        ESP_LOGE(TAG, "Failed to find music: 没有找到歌曲 '%s'", song_name.c_str());
-        std::string msg = "找不到歌曲：【" + song_name + "】，歌手【" + artist_name + "】";
-        app.Schedule([display, msg]() {
-            display->SetChatMessage("assistant", msg.c_str());
-        });
-        ESP_LOGE(TAG, "%s", msg.c_str());
+    if (!parse_jsondoc_to_musicinfo(doc,random)){
+        ESP_LOGE(TAG, "解析歌曲回應失敗！");
         return false;
     }
     return true;
 }
+
 /**
- * @brief 透過 HTTP GET 取得回應內容
+ * @brief 查詢結果 DynamicJsonDocument 文件，建立 current_music_info_ 與 playlists_
  *
- * 這個函式使用提供的 Http 物件，對指定 URL 發出 GET 請求，
- * 並將回傳內容寫入 response 和 query_result。
- *
- * @param http          已建立的 Http 物件引用
- * @param full_url      要請求的完整 URL
- * @param response      回傳的原始內容
- * @param query_result  結果文字
+ * @param doc       查詢結果的 DynamicJsonDocument 文件，用來生成 current_music_info_ 與 playlists_
+ * @param random    get_music_info 的歌曲/歌手都空白時為 true，有條件時為 false，程序會篩選 doc 不同節點
  *
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool http_get_response(std::string& full_url, std::string& response, std::string& query_result){
-    auto network = Board::GetInstance().GetNetwork();
-    auto http = network->CreateHttp(0);
-    http->SetTimeout(1500);
-    // 打开GET连接
-    if (!http->Open("GET", full_url))
+bool HttpMp3Player::parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, const bool random){
+    // 取得 song array
+    JsonArrayConst songs ;
+    if(random){
+        songs = doc["subsonic-response"]["randomSongs"]["song"].as<JsonArrayConst>();
+    }
+    else{
+        songs = doc["subsonic-response"]["searchResult2"]["song"].as<JsonArrayConst>();
+    }
+    if(!songs || songs.size() == 0){
+        ESP_LOGE(TAG, "doc 沒有歌曲");
+        return false;
+    }
+
+    playlists_.clear();            // 清空 playlist，size = 0, capacity 可能不變
+    playlists_.shrink_to_fit(); // 請求減少容量以釋放未使用的內存
+
+    for (JsonObjectConst song : songs)
     {
-        ESP_LOGE(TAG, "Failed to connect to music API");
-        query_result = "Failed to connect to music API";
-        return false;
+        MusicInfo m = MusicInfo{};
+        m.song_id = song["id"].as<std::string>();
+        m.title = song["title"].as<std::string>();
+        m.artist = song["artist"].as<std::string>();
+        m.cover_id = song["coverArt"].as<std::string>();
+        m.sampling_rate = song["samplingRate"].as<std::size_t>();
+        m.channel_count = song["channelCount"].as<std::size_t>();
+
+        playlists_.push_back(m);
+
+        ESP_LOGI(TAG,"歌曲：%s, 歌手：%s", m.title.c_str(), m.artist.c_str());
     }
-    // 检查响应状态码
-    int status_code = http->GetStatusCode();
-    if (status_code != 200)
-    {
-        ESP_LOGE(TAG, "HTTP GET failed with status code: %d", status_code);
-        http->Close();
-        query_result = "HTTP GET failed with status code: " + status_code;
-        return false;
-    }
-
-    ESP_LOGI(TAG, "取得回應內容");
-    size_t len = http->GetBodyLength();
-    ESP_LOGI("HTTP", "Body length: %u", len); //0: chunk 模式
-    //std::string response = http->ReadAll();  會卡死沒回應，感謝 ChatGPT，說要用 http->Read
-
-    response.clear();
-    char buf[1024];
-    int n;
-    while ((n = http->Read(buf, sizeof(buf))) > 0) {
-        response.append(buf, n);
-    }
-    if (n < 0) {
-        query_result = "http error";
-        ESP_LOGE(TAG, "HTTP error");
-        http->Close();        
-        return false;
-    }
-    http->Close();
-    ESP_LOGI(TAG, "HTTP read finished, total %u bytes", response.size());
-
-    ESP_LOGD(TAG, "回應 response = %s", response.c_str());
-    return true;
-}
-
-/**
- * @brief 解析 response 內容，寫入 _current_music_info
- * 
- * @param response      回應內容（從外部傳入）
- * @param query_result  結果
- *
- * @return true         請求成功
- * @return false        請求失敗
- */
-bool HttpMp3Player::parse_response_to_musicinfo(std::string& response, std::string& query_result){
-    cJSON *response_json = cJSON_Parse(response.c_str());
-    if (!response_json){
-        query_result = "json error";
-        ESP_LOGE(TAG, "Failed to parse JSON response : %s", response.c_str());
-        return false;
-    }
-    cJSON *subsonic = cJSON_GetObjectItem(response_json, "subsonic-response");
-    cJSON *search   = cJSON_GetObjectItem(subsonic, "searchResult2");
-    cJSON *songs    = cJSON_GetObjectItem(search, "song");
-
-    cJSON* title = nullptr;
-    cJSON* artist = nullptr;
-
-    bool _has_result = false;
-
-    if (songs) {
-        int song_count = cJSON_GetArraySize(songs);
-
-        // 清空 playlist，並釋放未使用的內存
-        playlists.clear();            // 清空 playlist，size = 0, capacity 可能不變
-        playlists.shrink_to_fit(); // 請求減少容量以釋放未使用的內存
-        // 遍歷並添加到 playlist
-        for (int i = 0; i < song_count; ++i) {
-            cJSON* song = cJSON_GetArrayItem(songs, i);
-            cJSON* song_id = cJSON_GetObjectItem(song, "id");
-            if(cJSON_IsString(song_id) && song_id->valuestring){
-                playlists.push_back(song_id->valuestring);
-            }
-            //cJSON *_title = cJSON_GetObjectItem(song, "title");
-            //cJSON *_artist = cJSON_GetObjectItem(song, "artist");
-            //ESP_LOGI(TAG,"歌曲：%s, 歌手：%s", _title->valuestring, _artist->valuestring);
-        }
-        current_music_info_ = MusicInfo{}; //清空並釋放資源
-
-        uint32_t r = esp_random();   // 硬體亂數
-        int index = r % song_count; // 取餘數，範圍是 0~ (song_count-1)，亂數取歌
-
-        cJSON *song = cJSON_GetArrayItem(songs, index); //亂數取到的歌曲資訊
-        cJSON* song_id = cJSON_GetObjectItem(song, "id"); //取得的歌曲 id，播放的必要參數
-        title = cJSON_GetObjectItem(song, "title");
-        artist = cJSON_GetObjectItem(song, "artist");
-        //將取得的音樂資訊放入全域 _current_music_info
-        if(cJSON_IsString(song_id) && song_id->valuestring){
-            current_music_info_.song_id = song_id->valuestring;
-            _has_result = true;
-        }
-        if(cJSON_IsString(title) && title->valuestring){
-            current_music_info_.title = title->valuestring;
-        }
-        if(cJSON_IsString(artist) && artist->valuestring){
-            current_music_info_.artist = artist->valuestring;
-        }
-    }
-    cJSON_Delete(response_json);
-    return _has_result;
-}
-/**
- * @brief 解析 response 內容，結果寫入 current_music_info_.lyrics
- * 
- * @param response      回應內容（從外部傳入）
- * @param query_result  處理結果
- *
- * @return true         請求成功
- * @return false        請求失敗
- */
-bool HttpMp3Player::parse_response_to_lyric(std::string& response, std::string& query_result){
-    cJSON *response_json = cJSON_Parse(response.c_str());
-    if (!response_json){
-        query_result = "lyric json error";
-        ESP_LOGE(TAG, "Failed to parse lyric JSON response : %s", response.c_str());
-        return false;
-    }
-    cJSON *subsonic = cJSON_GetObjectItem(response_json, "subsonic-response");
-    cJSON *lyricsList = cJSON_GetObjectItem(subsonic, "lyricsList");
-
-    cJSON *structuredLyrics = cJSON_GetObjectItem(lyricsList, "structuredLyrics");
-    cJSON *first = cJSON_GetArrayItem(structuredLyrics, 0);
-    cJSON *lines = cJSON_GetObjectItem(first, "line");
     
-    int lyric_count = cJSON_GetArraySize(lines);
+    current_music_info_ = MusicInfo{}; //清空並釋放資源
 
-    if(lyric_count == 0){
-        query_result = "response 没有歌词资料！";
-        ESP_LOGE(TAG, "response 沒有歌詞資料！");
-        cJSON_Delete(response_json);
+    uint32_t r = esp_random();   // 硬體亂數
+    size_t song_count =  songs.size();
+    int index = r % song_count; // 取餘數，範圍是 0~ (song_count-1)，亂數取歌
+
+    current_music_info_.song_id = songs[index]["id"].as<std::string>();
+    current_music_info_.title = songs[index]["title"].as<std::string>();
+    current_music_info_.artist = songs[index]["artist"].as<std::string>();
+    current_music_info_.cover_id = songs[index]["coverArt"].as<std::string>();
+    current_music_info_.sampling_rate = songs[index]["samplingRate"].as<std::size_t>();
+    current_music_info_.channel_count = songs[index]["channelCount"].as<std::size_t>();
+
+    return true;
+}
+
+/**
+ * @brief 根據 song_id 查詢並產生歌詞資料
+ *
+ * @param song_id       歌曲 id
+ *
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
+bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
+    std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(song_id);
+    ESP_LOGI(TAG, "查詢歌詞位址：%s",full_query_lyric_url.c_str());
+
+    DynamicJsonDocument doc(4096);
+    if(!get_subsonic_response(full_query_lyric_url, doc)){
+        ESP_LOGE(TAG, "歌詞回應解析失敗！");
         return false;
     }
+    else{
+       if(!parse_jsondoc_to_lyric(doc)){
+         ESP_LOGE(TAG, "解析歌詞內容失敗！");
+         return false;
+       }
+    }
+    return true;
+}
 
+/**
+ * @brief 解析 DynamicJsonDocument doc 內容，寫入 current_music_info_.lyrics 歌詞容器
+ * 
+ * @param doc      回應的 DynamicJsonDocument 內容（從外部傳入）
+ *
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
+ bool HttpMp3Player::parse_jsondoc_to_lyric(const DynamicJsonDocument &doc){
+    JsonArrayConst lyrics = doc["subsonic-response"]["lyricsList"]["structuredLyrics"][0]["line"].as<JsonArrayConst>();
+    if(!lyrics || lyrics.size() == 0){
+        ESP_LOGE(TAG, "doc 沒有歌詞資料！");
+        return false;
+    }
     // 先釋放舊陣列
     current_music_info_.lyrics.clear();
     current_music_info_.lyrics.shrink_to_fit();
 
-    for (int i = 0; i < lyric_count; i++) {
-        cJSON *line = cJSON_GetArrayItem(lines, i);
-        cJSON *start = cJSON_GetObjectItem(line, "start");
-        cJSON *value = cJSON_GetObjectItem(line, "value");
-
-        LyricLine lyric{};
-        lyric.start_ms = start->valueint;
-        strlcpy(lyric.text,
-            value->valuestring,
-            sizeof(lyric.text));
-        current_music_info_.lyrics.push_back(lyric);
-    }
-    
-    cJSON_Delete(response_json);
-    if (current_music_info_.lyrics.size() > 0) {
-        for (int i = 0; i < current_music_info_.lyrics.size() ; i++) {
-            ESP_LOGD(TAG, "%u ms : %s", 
-                current_music_info_.lyrics[i].start_ms, 
-                current_music_info_.lyrics[i].text);
-        }
+    for (JsonObjectConst line : lyrics){
+        LyricLine lyric_line{};
+        lyric_line.start_ms = line["start"].as<std::size_t>();
+        strlcpy(lyric_line.text,
+            line["value"].as<std::string>().c_str(),
+            sizeof(lyric_line.text));
+        current_music_info_.lyrics.push_back(lyric_line);
     }
     return !current_music_info_.lyrics.empty();
-    //return lyric_count > 0 ? true : false;
 }
 
+/**
+ * @brief 連續播放模式
+ * 
+ */
 void HttpMp3Player::continuous_playing(){
-    int song_count = playlists.size();
+    int song_count = playlists_.size();
     if (song_count <= 0){
         ESP_LOGE(TAG, "playlists 沒有歌曲！");
     }
 
     try { //重建 current_music_info_ 與歌詞
         std::string next_song_id = current_music_info_.song_id;
+        int16_t index = -1;
         while (song_count >= 2 && next_song_id == current_music_info_.song_id) //避免下一首挑到同一首歌
         {
             uint32_t r = esp_random();   // 硬體亂數
-            int index = r % song_count;
-            next_song_id = playlists.at(index);
-        }
-        
+            index = r % song_count;
+            next_song_id = playlists_.at(index).song_id;
+        }        
         current_music_info_.song_id = next_song_id;  // 使用 at()，带边界检查
-        current_music_info_.mp3_url = base_url + "/stream.view?" + subsonic_api_para + "&id=" + url_encode(current_music_info_.song_id) ;
-
-        std::string lyric_response, query_result;
-        std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(current_music_info_.song_id);
-
-        if(!http_){
-            auto network = Board::GetInstance().GetNetwork();
-            http_ = network->CreateHttp(0);
-            http_->SetTimeout(1500);
+        current_music_info_.mp3_url = build_stream_url(current_music_info_.song_id);
+        if(index >=0){
+            current_music_info_.title  = playlists_.at(index).title;
+            current_music_info_.artist = playlists_.at(index).artist;
+            current_music_info_.sampling_rate = playlists_.at(index).sampling_rate;
+            current_music_info_.channel_count = playlists_.at(index).channel_count;
         }
-        if (http_get_response(full_query_lyric_url, lyric_response, query_result)){
-            if(!parse_response_to_lyric(lyric_response, query_result)){
-                ESP_LOGE(TAG, "歌詞回應解析失敗！");
-            }
-        }    
-        else{
-            ESP_LOGE(TAG, "取得歌詞回應失敗！");
+        //取得歌詞
+        current_music_info_.lyrics.clear();
+        current_music_info_.lyrics.shrink_to_fit();
+        if(!get_song_lyrics(current_music_info_.song_id)){
+            std::string msg = "【" + current_music_info_.title + "】沒有歌詞!";
+            ESP_LOGW(TAG,"%s",msg.c_str());
         }
         Play();
     } catch (const std::out_of_range& e) {
@@ -478,6 +536,7 @@ void HttpMp3Player::continuous_playing(){
     }
     
 }
+
 bool HttpMp3Player::Play()
 {
     if (current_music_info_.mp3_url.empty()) {
@@ -530,6 +589,12 @@ void HttpMp3Player::streaming_task(void* arg)
     vTaskDelete(nullptr);
 }
 
+/**
+ * @brief 使用 ESP-ADF 的 audio pipeline 進行 current_music_info_ 播放，
+ * 
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
 bool HttpMp3Player::start_streaming_pipeline(){
     #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C5 / C6 ，不支援最早的 ESP32"
     #warning "音樂串流平台若為 https://，裝置需要 PSRAM ，否則 audio pipeline 可能因記憶體不足而跳出"
@@ -648,6 +713,9 @@ bool HttpMp3Player::start_streaming_pipeline(){
             display->SetChatMessage("assistant", msg.c_str());
         });
     }
+    app.Schedule([display]() {
+        display->SetEmotion("happy");
+    });
     
     // PCM 數據參數
     constexpr size_t PCM_BYTES = 2048;
@@ -847,4 +915,6 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     return true;
 }
+
+
 

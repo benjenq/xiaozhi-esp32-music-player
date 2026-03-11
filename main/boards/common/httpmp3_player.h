@@ -4,7 +4,7 @@
 #include <string>
 #include <vector> //vector
 #include <memory> //unique_ptr
-#include <http.h> //<Http> http_
+#include <ArduinoJson.h>
 
 typedef enum {
     PlayModeSingle = 0, //單曲播放模式
@@ -19,8 +19,10 @@ struct MusicInfo {
     std::string song_id;
     std::string title;
     std::string artist;
+    std::string cover_id;
     std::string mp3_url;
-    int sample_rate;
+    size_t sampling_rate;
+    size_t channel_count;
     std::vector<LyricLine> lyrics;
 };
 
@@ -35,21 +37,23 @@ public: //Misic override
     bool IsPlaying() override;
 
 public: // HttpMp3Player 方法
-    bool QuerySong(const std::string& song_name, const std::string& artist_name, std::string& query_result);
+    bool QueryAndPlay(const std::string& song_name, const std::string& artist_name, std::string& query_result);
 
 private:
     bool is_playing_ = false;
     bool stop_flag_ = false;
     MusicInfo current_music_info_ = {}; //宣告、初始化（initialization）時可以這樣寫。後續清空也只需要 current_music_info_ = {};
-    std::unique_ptr<Http> http_ = nullptr; //共用 http 連線物件
 
     //連續播放模式
     PlayMode play_mode_ = PlayModeSingle; //播放模式
-    std::vector<std::string> playlists = {}; //播放的曲目清單
+    std::vector<MusicInfo> playlists_ = {}; //播放的曲目清單
 
-    bool create_music_info(const std::string& song_name, const std::string& artist_name, std::string& query_result);
-    bool parse_response_to_musicinfo(std::string& response, std::string& query_result);
-    bool parse_response_to_lyric(std::string& response, std::string& query_result);
+    bool get_music_info(const std::string& song_name, const std::string& artist_name);
+    bool parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, const bool random = false);
+
+    bool get_song_lyrics(const std::string& song_id);
+    bool parse_jsondoc_to_lyric(const DynamicJsonDocument &doc);
+
     void continuous_playing(); //連續播放模式入口
     static void streaming_task(void* arg);
     bool start_streaming_pipeline();

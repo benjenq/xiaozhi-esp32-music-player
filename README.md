@@ -217,21 +217,22 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 
 修改代碼文件：
 
-| 文件名稱                                                  | 說明                                                                                   |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| main/assets/locales/zh-CN,zh-TW,en-US/language.json | 新增音樂播放提示多語系                                                                          |
-| CMakeLists.txt                                        | 新增 ESP-ADF 組件                                                                        |
-| main/CMakeLists.txt                                   | 加入播放器源碼，並搭配根目錄 CMakeLists.txt 的相關修改                                                  |
-| sdkconfig.defaults.xxxx                               | 新增 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y ，編譯 ESP-ADF 必要。預設微信聊天風格（對應同步顯示歌詞） |
-| main/application.cc                                   | 切換聊天狀態時，停止音樂播放                                                                       |
-| main/Kconfig.projbuild                                | 加入 Subsonic API 相關項目，修改串流音樂位址不需修改代碼                                                  |
-| main/audio/audio_codec.h                              | 新增切換音樂和語音 Sample Rate 的功能                                                            |
-| main/audio/audio_codec.cc                             | 同上                                                                                   |
-| main/audio/audio_service.cc                           | 中斷音頻輸出加入音樂播放判定，避免播放音樂時被系統中斷輸出                                                        |
-| main/boards/common/board.h                            | 新增音樂播放器的虛擬介面                                                                         |
-| main/boards/common/board.cc                           | 同上                                                                                   |
-| main/boards/common/power_save_timer.cc                | 啟用電源管理程序時，播放音樂不進入省電模式判定                                                              |
-| main/boards/common/sleep_timer.cc                     | 啟用裝置睡眠模式時，播放音樂不進入省電模式判定
+| 文件名稱                                               | 說明                                                                         |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
+| main/assets/locales/zh-CN,zh-TW,en-US/language.json   | 新增音樂播放提示多語系                                                           |
+| sdkconfig.defaults.xxxx                               | 新增 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y ，編譯 ESP-ADF 必要。      |
+| idf_component.yml                                     | 新增 bblanchon/arduinojson: ^7.4.3                                            |
+| CMakeLists.txt                                        | 新增 ESP-ADF 組件                                                              |
+| main/CMakeLists.txt                                   | 加入播放器源碼，並搭配根目錄 CMakeLists.txt 的相關修改                              |
+| main/application.cc                                   | 切換聊天狀態時，停止音樂播放                                                      |
+| main/Kconfig.projbuild                                | 加入 Subsonic API 相關項目，修改串流音樂位址不需修改代碼                            |
+| main/audio/audio_codec.h                              | 新增切換音樂和語音 Sample Rate 的功能                                            |
+| main/audio/audio_codec.cc                             | 同上                                                                          |
+| main/audio/audio_service.cc                           | 中斷音頻輸出加入音樂播放判定，避免播放音樂時被系統中斷輸出                             |
+| main/boards/common/board.h                            | 新增音樂播放器的虛擬介面                                                         |
+| main/boards/common/board.cc                           | 同上                                                                          |
+| main/boards/common/power_save_timer.cc                | 啟用電源管理程序時，播放音樂不進入省電模式判定                                       |
+| main/boards/common/sleep_timer.cc                     | 啟用裝置睡眠模式時，播放音樂不進入省電模式判定                                       |
 
 [這裡](https://github.com/benjenq/xiaozhi-esp32-music-player/commit/6ec4ef7fcc7d4a1b56a6a167324ef183fa456824)可以查看具體修改了哪些部分。
 
