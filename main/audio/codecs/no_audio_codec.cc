@@ -69,6 +69,8 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
             }
         }
     };
+
+    original_std_tx_cfg_ = std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
     ESP_LOGI(TAG, "Duplex channels created");
@@ -130,6 +132,8 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
             }
         }
     };
+
+    original_std_tx_cfg_ = std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
 
     // Create a new channel for MIC
@@ -199,6 +203,7 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
             }
         }
     };
+    original_std_tx_cfg_ = std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
 
     // Create a new channel for MIC
@@ -339,6 +344,8 @@ NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output
             },
         },
     };
+
+    original_std_tx_cfg_ = tx_std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &tx_std_cfg));
 #if SOC_I2S_SUPPORTS_PDM_RX
     // Create a new channel for MIC in PDM mode

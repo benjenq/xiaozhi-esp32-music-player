@@ -21,46 +21,13 @@
 
 #define TAG "HttpMp3Player"
 
-/**
- * @brief deserializeJson 時使用此類物件，並搭配 filter 時，可實現串流解析 JSON 並大幅縮小 Subsonic API 的 JSON 體積 
- */
-class HttpStreamReader {
-public:
-    HttpStreamReader(Http* http)
-    {
-        _http = http;
-        _pos = 0;
-        _len = 0;
-    }
-
-    int read()
-    {
-        if (_pos >= _len)
-        {
-            _len = _http->Read(_buffer, sizeof(_buffer));
-            _pos = 0;
-
-            if (_len <= 0)
-                return -1;
-        }
-
-        return _buffer[_pos++];
-    }
-private:
-    Http* _http;
-
-    static const int BUFFER_SIZE = 512;
-    char _buffer[BUFFER_SIZE];
-
-    int _pos;
-    int _len;
-};
-
 const int pipeline_task_prio_ = 10;
 const std::string base_url = CONFIG_SUBSONICAPI_URL;
 const std::string subsonic_api_para = CONFIG_SUBSONICAPI_PARA; //"u=admin&p=1111&s=raw&v=1.16.1&c=xiaozhi";
 
-HttpMp3Player::HttpMp3Player(){
+#pragma region 類別成員函數 - 基本
+HttpMp3Player::HttpMp3Player(bool support_stereo){
+    support_stereo_ = support_stereo;
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddTool("self.music.play_song",
             "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
@@ -154,6 +121,71 @@ bool HttpMp3Player::Stop() {
 bool HttpMp3Player::IsPlaying() {
     return is_playing_;
 }
+#pragma endregion
+
+#pragma region 全域函數
+
+/**
+ * @brief deserializeJson 時使用此類物件，並搭配 filter 時，可實現串流解析 JSON 並大幅縮小 Subsonic API 的 JSON 體積 
+ */
+class HttpStreamReader {
+public:
+    HttpStreamReader(Http* http)
+    {
+        _http = http;
+        _pos = 0;
+        _len = 0;
+    }
+
+    int read()
+    {
+        if (_pos >= _len)
+        {
+            _len = _http->Read(_buffer, sizeof(_buffer));
+            _pos = 0;
+
+            if (_len <= 0)
+                return -1;
+        }
+
+        return _buffer[_pos++];
+    }
+private:
+    Http* _http;
+
+    static const int BUFFER_SIZE = 512;
+    char _buffer[BUFFER_SIZE];
+
+    int _pos;
+    int _len;
+};
+
+//印出 Heap 可用記憶體
+void print_heap_free_size(){
+    int free_sram          = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    int largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    int min_free_sram      = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGW(TAG, "free sram: %u , largest free block: %u , minimal sram: %u", free_sram, largest_free_block, min_free_sram);
+}
+
+/**
+ * @brief 計算補滿 ring buffer 時，對應 PCM 資料量的持續時間
+ * @note 未傳入值時預設回傳 25
+ * 
+ * @param out_rb_size    out ring buffer size
+ * @param sample_rates   PCM sample rates
+ * @param bits           PCM bits
+ * @param channels       PCM channels
+ *
+ * @return uint16_t      回傳毫秒
+ */
+uint16_t buffer_duration_ms(int out_rb_size = 0, int sample_rates = 0, int bits = 0, int channels = 0){
+    int16_t buffer_ms = 25;
+    if (sample_rates > 0 && bits > 0 && channels > 0) {
+        buffer_ms = uint16_t((out_rb_size * 1000) / (sample_rates * (bits / 8) * channels));
+    }
+    return (buffer_ms < 50) ? buffer_ms : 50;
+}
 
 // URL编码函数
 static std::string url_encode(const std::string &str)
@@ -204,7 +236,7 @@ bool parse_url_protocol(const std::string &url, std::string &protocol){
 
 /**
  * 
- * @brief 將 Subsonic API 回應 JSON 轉為 DynamicJsonDocument 格式，並透過 deserializeJson 實現串流解析 JSON 。
+ * @brief 將 Subsonic API 回應 JSON 轉為 JsonDocument 格式，並透過 deserializeJson 實現串流解析 JSON 。
  * @note 使用 ArduinoJson 與自訂 HttpStreamReader
  * 
  * @param full_url      要請求的完整 URL
@@ -213,7 +245,7 @@ bool parse_url_protocol(const std::string &url, std::string &protocol){
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool get_subsonic_response(std::string& full_url,DynamicJsonDocument &response)
+bool get_subsonic_response(std::string& full_url, JsonDocument &response)
 {
     auto network = Board::GetInstance().GetNetwork();
     auto http = network->CreateHttp(0);
@@ -238,7 +270,7 @@ bool get_subsonic_response(std::string& full_url,DynamicJsonDocument &response)
 
     ESP_LOGI(TAG, "Start streaming JSON...");
     // JSON filter（只取需要欄位）
-    StaticJsonDocument<256> filter;
+    JsonDocument filter;
 
     //三種查詢過濾器寫在一起即可
     //歌曲查詢
@@ -292,8 +324,12 @@ std::string build_stream_url(const std::string &song_id){
 }
 
 std::string build_cover_url(const std::string &cover_id){
-    return base_url + "/getCoverArt.view?" + subsonic_api_para + "&size=240&id=" + url_encode(cover_id);
+    return base_url + "/getCoverArt.view?" + subsonic_api_para + "&size=220&id=" + url_encode(cover_id);
 }
+
+#pragma endregion
+
+#pragma region 類別成員-歌單與歌詞
 /**
  * 
  * @brief 主要播放入口。藉由歌曲名/歌手名，查詢的結果進行播放
@@ -318,8 +354,6 @@ bool HttpMp3Player::QueryAndPlay(const std::string& song_name, const std::string
         });
         return false;
     }
-
-    current_music_info_.mp3_url =  build_stream_url(current_music_info_.song_id);
 
     if(!get_song_lyrics(current_music_info_.song_id)){
         std::string msg = "【" + current_music_info_.title + "】沒有歌詞!";
@@ -372,7 +406,7 @@ bool HttpMp3Player::get_music_info(const std::string& song_name, const std::stri
     }
     ESP_LOGI(TAG, "查詢位址 URL: %s", full_query_song_url.c_str());
 
-    DynamicJsonDocument doc(4096);
+    JsonDocument doc;
     if(!get_subsonic_response(full_query_song_url, doc)){
         ESP_LOGE(TAG, "取得歌曲回應失敗！");
         return false;
@@ -385,15 +419,15 @@ bool HttpMp3Player::get_music_info(const std::string& song_name, const std::stri
 }
 
 /**
- * @brief 查詢結果 DynamicJsonDocument 文件，建立 current_music_info_ 與 playlists_
+ * @brief 查詢結果 JsonDocument 文件，建立 current_music_info_ 與 playlists_
  *
- * @param doc       查詢結果的 DynamicJsonDocument 文件，用來生成 current_music_info_ 與 playlists_
+ * @param doc       查詢結果的 JsonDocument 文件，用來生成 current_music_info_ 與 playlists_
  * @param random    get_music_info 的歌曲/歌手都空白時為 true，有條件時為 false，程序會篩選 doc 不同節點
  *
  * @return true         請求成功
  * @return false        請求失敗
  */
-bool HttpMp3Player::parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, const bool random){
+bool HttpMp3Player::parse_jsondoc_to_musicinfo(const JsonDocument &doc, const bool random){
     // 取得 song array
     JsonArrayConst songs ;
     if(random){
@@ -427,18 +461,63 @@ bool HttpMp3Player::parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, c
     
     current_music_info_ = MusicInfo{}; //清空並釋放資源
 
-    uint32_t r = esp_random();   // 硬體亂數
-    size_t song_count =  songs.size();
-    int index = r % song_count; // 取餘數，範圍是 0~ (song_count-1)，亂數取歌
-
-    current_music_info_.song_id = songs[index]["id"].as<std::string>();
-    current_music_info_.title = songs[index]["title"].as<std::string>();
-    current_music_info_.artist = songs[index]["artist"].as<std::string>();
-    current_music_info_.cover_id = songs[index]["coverArt"].as<std::string>();
-    current_music_info_.sampling_rate = songs[index]["samplingRate"].as<std::size_t>();
-    current_music_info_.channel_count = songs[index]["channelCount"].as<std::size_t>();
+    if(!random_choose_song()){
+        ESP_LOGE(TAG, "random_choose_song failed");
+        return false;
+    }
 
     return true;
+}
+
+/**
+ * @brief 從 playlists_ 中亂數取用一首到 current_music_info_
+ * 
+ * @return true         請求成功
+ * @return false        請求失敗
+ */
+bool HttpMp3Player::random_choose_song(){
+    size_t song_count = playlists_.size();
+    if(song_count <= 0){
+        ESP_LOGE(TAG, "playlists_ : No playlists available");
+        return false;
+    }
+
+    try {
+        //1. 當 current_music_info_.song_id.empty() 時表示 current_music_info_ 內容為初始空值。
+        //這時直接從 playlists_ 隨機選一首賦值給 current_music_info_
+        //2. 當 current_music_info_.song_id 已經有資料時，current_music_info_ 很可能是前一首剛播放完。
+        //這時：若 playlists_ 兩首以上，則不要重複挑到同一首。
+        //     若 playlists_ 只有 1 首，則不變更 current_music_info_
+        int16_t index = -1;
+        if(current_music_info_.song_id.empty()){ //當前歌曲空白，從 playlists_ 亂數取一首
+            uint32_t r = esp_random();
+            index = r % song_count;
+        }
+        else{ //current_music_info_ 已經有資料，可能是剛播放完的
+            std::string next_song_id = current_music_info_.song_id;
+            while (song_count >= 2 && next_song_id == current_music_info_.song_id) //避免下一首挑到同一首歌
+            {
+                uint32_t r = esp_random();   // 硬體亂數
+                index = r % song_count;
+                next_song_id = playlists_.at(index).song_id;
+            }
+        }
+        if(index >=0 && index < song_count){ //選出的歌曲 index 值
+            current_music_info_.song_id = playlists_.at(index).song_id;
+            current_music_info_.title  = playlists_.at(index).title;
+            current_music_info_.artist = playlists_.at(index).artist;
+            current_music_info_.cover_id = playlists_.at(index).cover_id;
+            current_music_info_.sampling_rate = playlists_.at(index).sampling_rate;
+            current_music_info_.channel_count = playlists_.at(index).channel_count;
+            //清空歌詞資料
+            current_music_info_.lyrics.clear();
+            current_music_info_.lyrics.shrink_to_fit();
+        }
+        return true;
+    } catch (const std::out_of_range& e) {
+        ESP_LOGE(TAG, "Out of range: %s", e.what() );
+        return false;
+    }  
 }
 
 /**
@@ -450,10 +529,14 @@ bool HttpMp3Player::parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, c
  * @return false        請求失敗
  */
 bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
+    // 先釋放舊陣列
+    current_music_info_.lyrics.clear();
+    current_music_info_.lyrics.shrink_to_fit();
+
     std::string full_query_lyric_url = base_url + "/getLyricsBySongId.view?" + subsonic_api_para + "&f=json&id=" + url_encode(song_id);
     ESP_LOGI(TAG, "查詢歌詞位址：%s",full_query_lyric_url.c_str());
 
-    DynamicJsonDocument doc(4096);
+    JsonDocument doc;
     if(!get_subsonic_response(full_query_lyric_url, doc)){
         ESP_LOGE(TAG, "歌詞回應解析失敗！");
         return false;
@@ -468,20 +551,20 @@ bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
 }
 
 /**
- * @brief 解析 DynamicJsonDocument doc 內容，寫入 current_music_info_.lyrics 歌詞容器
+ * @brief 解析 JsonDocument doc 內容，寫入 current_music_info_.lyrics 歌詞容器
  * 
- * @param doc      回應的 DynamicJsonDocument 內容（從外部傳入）
+ * @param doc      回應的 JsonDocument 內容（從外部傳入）
  *
  * @return true         請求成功
  * @return false        請求失敗
  */
- bool HttpMp3Player::parse_jsondoc_to_lyric(const DynamicJsonDocument &doc){
+ bool HttpMp3Player::parse_jsondoc_to_lyric(const JsonDocument &doc){
     JsonArrayConst lyrics = doc["subsonic-response"]["lyricsList"]["structuredLyrics"][0]["line"].as<JsonArrayConst>();
     if(!lyrics || lyrics.size() == 0){
         ESP_LOGE(TAG, "doc 沒有歌詞資料！");
         return false;
     }
-    // 先釋放舊陣列
+    // 已抓到歌詞，先釋放舊歌詞陣列
     current_music_info_.lyrics.clear();
     current_music_info_.lyrics.shrink_to_fit();
 
@@ -496,6 +579,10 @@ bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
     return !current_music_info_.lyrics.empty();
 }
 
+#pragma endregion
+
+#pragma region 播放 Play 相關
+
 /**
  * @brief 連續播放模式
  * 
@@ -503,43 +590,30 @@ bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
 void HttpMp3Player::continuous_playing(){
     int song_count = playlists_.size();
     if (song_count <= 0){
-        ESP_LOGE(TAG, "playlists 沒有歌曲！");
+        ESP_LOGE(TAG, "playlists_ : No playlists available");
+        return;
     }
 
-    try { //重建 current_music_info_ 與歌詞
-        std::string next_song_id = current_music_info_.song_id;
-        int16_t index = -1;
-        while (song_count >= 2 && next_song_id == current_music_info_.song_id) //避免下一首挑到同一首歌
-        {
-            uint32_t r = esp_random();   // 硬體亂數
-            index = r % song_count;
-            next_song_id = playlists_.at(index).song_id;
-        }        
-        current_music_info_.song_id = next_song_id;  // 使用 at()，带边界检查
-        current_music_info_.mp3_url = build_stream_url(current_music_info_.song_id);
-        if(index >=0){
-            current_music_info_.title  = playlists_.at(index).title;
-            current_music_info_.artist = playlists_.at(index).artist;
-            current_music_info_.sampling_rate = playlists_.at(index).sampling_rate;
-            current_music_info_.channel_count = playlists_.at(index).channel_count;
-        }
-        //取得歌詞
-        current_music_info_.lyrics.clear();
-        current_music_info_.lyrics.shrink_to_fit();
-        if(!get_song_lyrics(current_music_info_.song_id)){
-            std::string msg = "【" + current_music_info_.title + "】沒有歌詞!";
-            ESP_LOGW(TAG,"%s",msg.c_str());
-        }
-        Play();
-    } catch (const std::out_of_range& e) {
-        ESP_LOGE(TAG, "Out of range: %s", e.what() );
+    if(!random_choose_song()){
+        ESP_LOGE(TAG, "random_choose_song failed");
+        return;
     }
-    
+    //取得歌詞
+    current_music_info_.lyrics.clear();
+    current_music_info_.lyrics.shrink_to_fit();
+    if(!get_song_lyrics(current_music_info_.song_id)){
+        std::string msg = "【" + current_music_info_.title + "】沒有歌詞!";
+        ESP_LOGW(TAG,"%s",msg.c_str());
+    }
+    Play();
 }
 
 bool HttpMp3Player::Play()
 {
-    if (current_music_info_.mp3_url.empty()) {
+    if(!current_music_info_.song_id.empty()){
+        current_music_info_.mp3_url = build_stream_url(current_music_info_.song_id);
+    }
+    if(current_music_info_.mp3_url.empty()) {
         ESP_LOGE(TAG, "_current_music_info.mp3_url.empty()");
         return false;
     }
@@ -597,7 +671,7 @@ void HttpMp3Player::streaming_task(void* arg)
  */
 bool HttpMp3Player::start_streaming_pipeline(){
     #warning "經實測驗證，audio pipeline 支援 ESP32-S3 / C5 / C6 ，不支援最早的 ESP32"
-    #warning "音樂串流平台若為 https://，裝置需要 PSRAM ，否則 audio pipeline 可能因記憶體不足而跳出"
+    #warning "音樂串流平台若為 https://，需要更多記憶體，未搭載 PSRAM 有可能出現播放突然中斷的情況"
 
     if (current_music_info_.mp3_url.empty())
     {
@@ -613,7 +687,8 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     auto &app = Application::GetInstance();
     ESP_LOGW(TAG, "等待小智囉唆完畢....");
-    while(app.GetDeviceState() == kDeviceStateSpeaking){
+    while(app.GetDeviceState() == kDeviceStateSpeaking || 
+          app.GetDeviceState() == kDeviceStateConnecting){
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
@@ -630,11 +705,15 @@ bool HttpMp3Player::start_streaming_pipeline(){
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE); //避免待機時 WIFI 進入低功耗導致網路降速
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    // 定義管線 ring buffer 大小
+    // 定義管線 ring buffer 大小，http - mp3 - raw 建議由大至小，不然可能會餵不飽後面的 rb_size
 #if defined(CONFIG_SPIRAM)
-    const size_t PREBUFFER_THRESHOLD = 16 * 1024; // 啟用 PSRAM 時 16KB 緩衝
+    const size_t http_out_rb_size = 20 * 1024;
+    const size_t mp3_out_rb_size = 16 * 1024;
+    const size_t raw_out_rb_size = 16 * 1024;
 #else
-    const size_t PREBUFFER_THRESHOLD = 8 * 1024; // 8KB 緩衝
+    const size_t http_out_rb_size = 12 * 1024;
+    const size_t mp3_out_rb_size = 4 * 1024;
+    const size_t raw_out_rb_size = 4 * 1024;
 #endif
     ESP_LOGW(TAG, "開始 HTTP - MP3 - RAW 音樂管線流程....");
     ESP_LOGI(TAG, "代碼薅自 ESP-ADF 範例 pipeline_http_mp3 再做些修改...");
@@ -650,6 +729,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     ESP_LOGI(TAG, "[2.1] Create http stream to get data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
+    http_cfg.out_rb_size = http_out_rb_size;
     http_cfg.task_prio = pipeline_task_prio_; //解決 ESP32 C5 出現看門狗警告、下載卡頓。
     if (protocol_ == "https") {
         //Subsonic API 採用 HTTPS，CPU 負載提高且需更大緩衝區。
@@ -666,14 +746,14 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     ESP_LOGI(TAG, "[2.2] Create mp3 decoder to decode mp3 data");
     mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
-    mp3_cfg.out_rb_size = PREBUFFER_THRESHOLD ; //原本只有 2K 有偶發斷音的現象
+    mp3_cfg.out_rb_size = mp3_out_rb_size ; //原本只有 2K 有偶發斷音的現象
     mp3_cfg.task_prio = pipeline_task_prio_;
     mp3_decoder = mp3_decoder_init(&mp3_cfg);
 
     ESP_LOGI(TAG, "[2.3] Create raw stream reader to read data from pipeline then write to codec chip");
     raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_cfg.type = AUDIO_STREAM_READER;
-    raw_cfg.out_rb_size = PREBUFFER_THRESHOLD;
+    raw_cfg.out_rb_size = raw_out_rb_size;
     raw_stream_reader = raw_stream_init(&raw_cfg);
 
     ESP_LOGI(TAG, "[2.4] Register all elements to audio pipeline");
@@ -723,13 +803,15 @@ bool HttpMp3Player::start_streaming_pipeline(){
     std::vector<int16_t> pcm_data;
     pcm_data.reserve(PCM_BYTES / sizeof(int16_t));
 
-    //codec->SetOutputSampleRate 的預設參數：
-    //1. 將雙聲道合併為單聲，2. sample_rate 會跟著 MP3 變化。
-    int channels = 1; //
-    int sample_rate = 44100; // 當前 MP3 的採樣頻率
+    //參數：計算 codec->SetOutputSampleRate 與歌詞時間的參數
+    int sample_rates = 44100; // 當前 MP3 的採樣頻率
+    int bits = 16;
+    int channels = 1;
+    //ring buffer 的緩衝時間
+    uint16_t pcm_buffer_duration_ms = buffer_duration_ms();
 
     //參數：播放進度推算歌詞的位置
-    size_t total_samples_played = 0; //已播放的音頻數據，用來換算播放時間
+    size_t total_frames_played = 0; //已播放的音頻 Frame 幀數，用來換算播放時間
     size_t current_lyric_index = 0; //當前歌詞的位置
 
     bool complete_played = false; //判定是中斷或正常播完
@@ -744,17 +826,24 @@ bool HttpMp3Player::start_streaming_pipeline(){
         // 1. 同步事件檢查 pipeline stop 或 music info
         audio_event_iface_msg_t msg;
         while (audio_event_iface_listen(evt, &msg, 0) == ESP_OK) { // 非阻塞
+            //取得 MP3 的規格資訊
             if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT &&
                 msg.source == (void *) mp3_decoder &&
                 msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
-                audio_element_info_t music_info = {0};
-                audio_element_getinfo(mp3_decoder, &music_info);
-                ESP_LOGI(TAG, "[ * ] Receive music info from mp3 decoder, sample_rates=%d, bits=%d, ch=%d",
-                     music_info.sample_rates, music_info.bits, music_info.channels);
-                channels = (int)music_info.channels;
-                sample_rate = music_info.sample_rates;
-                codec->SetOutputSampleRate(music_info.sample_rates);
+                    audio_element_info_t music_info = {0};
+                    audio_element_getinfo(mp3_decoder, &music_info);
+                    ESP_LOGI(TAG, "[ * ] Receive music info from mp3 decoder, sample_rates=%d, bits=%d, ch=%d",
+                    music_info.sample_rates, music_info.bits, music_info.channels);
+                    channels = (int)music_info.channels;
+                    sample_rates = music_info.sample_rates;
+                    bits = music_info.bits;
+                    pcm_buffer_duration_ms = buffer_duration_ms(raw_out_rb_size, sample_rates, bits, channels );
+                    ESP_LOGW(TAG, "pcm_buffer_duration_ms = %d", pcm_buffer_duration_ms);
+                    print_heap_free_size();
+                    codec->SetOutputSampleRate(music_info.sample_rates, (channels == 2 && support_stereo_));
+                    print_heap_free_size();
             }
+            //取得 HTTP 管線的進度
             if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT &&
                 msg.source == (void *) http_stream_reader &&
                 msg.cmd == AEL_MSG_CMD_REPORT_POSITION) {
@@ -768,35 +857,46 @@ bool HttpMp3Player::start_streaming_pipeline(){
                 msg.source == (void *) mp3_decoder && 
                 msg.cmd == AEL_MSG_CMD_REPORT_STATUS && 
                 ((int)msg.data == AEL_STATUS_STATE_STOPPED || (int)msg.data == AEL_STATUS_STATE_FINISHED)) {
-                
-                ESP_LOGW(TAG, "mp3_decoder (AEL_STATUS_STATE = %d)，切換至強迫輸出模式...", msg.data);
-                // 關鍵：一旦解碼器結束，就強制解除 buffer_enabled 狀態
-                buffer_enabled = false;
+                    ESP_LOGW(TAG, "mp3_decoder (AEL_STATUS_STATE = %d)，切換至強迫輸出模式...", msg.data);
+                    // 關鍵：一旦解碼器結束，就強制解除 buffer_enabled 狀態
+                    buffer_enabled = false;
             }
             //正常播完
             if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT &&
                 msg.source == (void *) raw_stream_reader &&
                 msg.cmd == AEL_MSG_CMD_REPORT_STATUS &&
                 ((int)msg.data == AEL_STATUS_STATE_STOPPED || (int)msg.data == AEL_STATUS_STATE_FINISHED)) {
+                    ESP_LOGW(TAG, "raw_stream_reader (AEL_STATUS_STATE = %d)，正常結束...", msg.data);
                     complete_played = true;
                     stop_flag_ = true;
-                    ESP_LOGW(TAG, "raw_stream_reader (AEL_STATUS_STATE = %d)，正常結束...", msg.data);
                     break;
-                }
+            }
         }
 
         // 2. 緩衝機制
         if (buffer_enabled){
             // 2.1 檢查 mp3_decoder 輸出端目前累積了多少資料
             //ringbuf_handle_t out_rb = audio_element_get_output_ringbuf(mp3_decoder);
+            //int fill_level = rb_bytes_filled(out_rb);
             // 2.1 檢查 Raw Stream 輸入端目前累積了多少資料
             ringbuf_handle_t in_rb = audio_element_get_input_ringbuf(raw_stream_reader);
             int fill_level = rb_bytes_filled(in_rb);
             // 2.2. 如果解碼器還在跑，才執行補水邏輯；如果解碼器停了，就直接往下走。
             // 只有在「真的乾了(fill_level < 4 * 1024)」或是「正在補水且還沒補滿(is_buffering)」時才停下來
-            if(fill_level < ((4 * 1024 < PREBUFFER_THRESHOLD / 2) ? (4 * 1024) : (PREBUFFER_THRESHOLD / 2)) ){
-                ESP_LOGI(TAG, "預緩衝中... %d/%d", fill_level, PREBUFFER_THRESHOLD);
-                vTaskDelay(pdMS_TO_TICKS(50));
+            if(fill_level < ((4 * 1024 < raw_out_rb_size / 2) ? (4 * 1024) : (raw_out_rb_size / 2)) ){
+                int free_sram          = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                int largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+                ESP_LOGI(TAG, "(%d)預緩衝中... (%d/%d) : free sram - %u, largest free block - %u ", pcm_buffer_duration_ms, 
+                        fill_level, raw_out_rb_size, free_sram, largest_free_block );
+                /*PCM 小教室
+                44100 Hz / 16-bit / 立體聲 的資料量：
+                   1 個 frame 資料量為：左聲 16 bit = 2 bytes + 右聲 16bit = 2 bytes = 4 bytes。
+                   1 秒 44100 frame ≈ 172.3 KB/s (44100 × 4)
+                   假設 raw_out_rb_size = 4KB，
+                   那麼 4KB 資料量相當於 4,096 / 176,400 ≈ 0.023 秒（23ms）
+                   緩衝時間可用這個數字當參考
+                */
+                vTaskDelay(pdMS_TO_TICKS(pcm_buffer_duration_ms));
                 continue;
             }
         }
@@ -805,26 +905,28 @@ bool HttpMp3Player::start_streaming_pipeline(){
             int read_len = raw_stream_read(raw_stream_reader, reinterpret_cast<char *>(pcm_buf), PCM_BYTES);
             if (read_len > 0) {
                 size_t num_samples = read_len / sizeof(int16_t); // 總樣本數
+                size_t frames = num_samples / channels; //總 frame 數，計算歌詞用
                 //size_t channels = music_info.channels;          // mp3 decoder 的 channel 數
 
-                if (channels == 2) {
+                if (channels == 2 && !support_stereo_) { //不支援立體聲時，則 L+R 混音
                     // stereo -> mono
-                    size_t mono_samples = num_samples / 2;
+                    size_t mono_samples = num_samples / channels; 
                     for (size_t i = 0; i < mono_samples; ++i) {
                         int16_t left  = pcm_buf[2*i];
                         int16_t right = pcm_buf[2*i + 1];
                         pcm_buf[i] = (left / 2 + right / 2); // 混合成 mono
                     }
                     num_samples = mono_samples;
+                    frames = mono_samples;
                 }
                 // 開始計算時間，準備同步歌詞
                 // 累計樣本數，以原本的 num_samples 為計算基準而不是單聲道 mono_samples
-                total_samples_played += num_samples;
+                total_frames_played += frames;
 
                 if((int)current_music_info_.lyrics.size() > 0){
                     // ===== 播歌時同步歌詞 =====
                     // 計算目前播放時間（毫秒）
-                    uint32_t current_ms = (uint64_t)total_samples_played * 1000 / sample_rate;
+                    uint32_t current_ms = (uint64_t)total_frames_played * 1000 / sample_rates;
                     size_t lyric_count = current_music_info_.lyrics.size();
                     while (current_lyric_index < lyric_count &&
                         current_ms >= current_music_info_.lyrics[current_lyric_index].start_ms) {
@@ -837,7 +939,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
                     }
                 }
                 // 計算秒數 保留這段寫法
-                //float seconds_played = (float)total_samples_played / sample_rate;
+                //float seconds_played = (float)total_frames_played / sample_rates;
                 //int minutes = (int)(seconds_played / 60);
                 //int seconds = (int)(seconds_played) % 60;
 
@@ -860,10 +962,9 @@ bool HttpMp3Player::start_streaming_pipeline(){
     ESP_LOGI(TAG, "[ 5 ] Stop audio_pipeline");
     audio_pipeline_stop(pipeline);
     audio_pipeline_wait_for_stop(pipeline);
-    // ⭐ 再等一下確保 element task 真正退出，播免後續資源清除不乾淨，例如監聽物件仍在作用，導致崩潰錯誤
-    vTaskDelay(pdMS_TO_TICKS(30));
+    //vTaskDelay(pdMS_TO_TICKS(30));  // ⭐ 再等一下確保 element task 真正退出，播免後續資源清除不乾淨，例如監聽物件仍在作用，導致崩潰錯誤
     audio_pipeline_terminate(pipeline);
-    audio_pipeline_wait_for_stop(pipeline);   // 再一次保險
+    //audio_pipeline_wait_for_stop(pipeline);   // 再一次保險
 
     /* Terminate the pipeline before removing the listener */
     audio_pipeline_unregister(pipeline, http_stream_reader);
@@ -881,7 +982,8 @@ bool HttpMp3Player::start_streaming_pipeline(){
     audio_element_deinit(raw_stream_reader);
     audio_element_deinit(mp3_decoder);
 
-    is_playing_ = false;
+    codec->ResetOutputSampleRate(); //恢復原來的設定
+
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); //恢復待機時 WIFI 低功耗
 
     //當完整播完歌，且為連續播放模式時保留 current_music_info_ 用來判定下一首不要重複，否則清空
@@ -889,13 +991,13 @@ bool HttpMp3Player::start_streaming_pipeline(){
         current_music_info_ = MusicInfo{}; //重置內容
     }
 
-    codec->ResetOutputSampleRate(); //恢復原來的設定
+    is_playing_ = false;
 
     if(complete_played){
         app.Schedule([display, message = Lang::Strings::MUSIC_FINISHED]() {
             display->SetChatMessage("assistant", message);
         });
-        vTaskDelay(pdMS_TO_TICKS(400)); //讓對話的畫面滑順一點
+        vTaskDelay(pdMS_TO_TICKS(300)); //讓對話的畫面滑順一點
         if(app.GetDeviceState() == kDeviceStateIdle){
             if(play_mode_ == PlayModeSingle){
                 ESP_LOGW(TAG,"單曲模式");
@@ -916,5 +1018,4 @@ bool HttpMp3Player::start_streaming_pipeline(){
     return true;
 }
 
-
-
+#pragma endregion

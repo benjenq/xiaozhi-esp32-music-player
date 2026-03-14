@@ -1,16 +1,17 @@
 # 支援播放 Subsonic API 串流音樂平台的小智 AI 聊天機器人
 
-### 緣起
+#### 緣起
 
 剛接觸「小智 AI 聊天機器人」時，對於網路上看到第三方支援網路串流音樂的版本很感興趣。不過找到的開源專案（例如 [Maggotxy/xiaozhi-esp32-music](https://github.com/Maggotxy/xiaozhi-esp32-music)）多為較舊的 v1.8.5，且串流音樂位址似乎已失效。
 
-因此，我個人嘗試改寫成支援 Subsonic API 的版本。好處是能經由開源軟體，自行在內網架設串流音樂平台。然而完成後發現，部分歌曲會不定時當機，或在播放第二首時容易崩潰；即使在第三方原始碼基礎上調整相關程式碼，在個人有限的程式能力和 AI 協助下，仍無法徹底解決。
+因此，我開始嘗試將第三方專案改寫成支援 Subsonic API 的版本。好處是個人可選擇開源軟體，自行在內網架設串流音樂平台。然而完成後發現，部分歌曲會不定時當機，或在播放第二首時容易崩潰；在個人有限的程式能力和 AI 協助下，仍無法徹底解決。
 
 基於以上種種原因，決定從蝦哥的源代碼（[78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)）開始進行二次開發，並參考先前第三方部分代碼，構建一套基於 v2.2.3 且能播放網路音樂串流的版本。
 
 ## 專案說明
 
 基於 [78/xiaozhi-esp32 v2.2.3](https://github.com/78/xiaozhi-esp32/tree/b34a9b19baebfa17d8fcaa0ed494444aaba174e5) 的二次開發，支援播放 Subsonic API 串流音樂平台的聊天機器人，並支援
+
 - 歌詞同步顯示。
 - 連續播放模式：當取得的歌曲數量超過 1 首時，會隨機選歌播放。
 
@@ -22,27 +23,43 @@
 
 實測支援 ESP32-S3 與 ESP32-C5、ESP32-C6，不支援最早期的 ESP32（資源不足），其他晶片未測試。使用 ESP-IDF 版本為 v5.5.2/v5.5.3。
 
-### 提醒事項
+#### ESP32-C6 注意事項
 
-**1. Flash 容量建議 8MB 以上。**
+ESP32-C6 因資源與效能有限，若沒有優化配置，容易出現間歇斷音、播放音樂中斷，甚至於崩潰重啟等現象。
 
-**2. ESP32-C6 因效能有限，需做以下調整：**
-- 關閉提詞喚醒功能，
-- 顯示風格(`display style`) 選擇 `Enabled default message style`（不使用微信對話風格）。
+**1. 建議以下優化配置：**
 
-否則 ESP32-C6 容易出現間音樂歇性斷音，突發中斷等情況。
+- 關閉提詞喚醒功能。
+- 顯示風格(`display style`) 選擇`預設訊息風格（Enabled default message style）`，不使用微信對話風格。
+  - 預設訊息風格並不需要觸控功能，因為不顯示歷史對話紀錄，所以能大幅節省記憶體資源。
+  - 若 ESP32-C6 裝置搭載 LCD + 觸控，請移除所有與觸控相關的程式碼，避免觸控事件干擾音源管線運作。
+- 若 ESP32-C6 裝置不支援立體聲輸出（例：僅一顆揚聲器，沒有實體立體聲輸出線路等），建議程式碼中關閉立體聲支援，可節省更多記憶體資源。
+  - 修改方式可參閱下方「[修改代碼](#1-修改代碼)」。
 
-**3. 串流音樂平台使用 https 連線時：**
-- 未搭載使用 PSRAM 的裝置（如 ESP32-C6 ）可能無法順利播放。
-- https 的 TLS 程序會消耗一定的 CPU 資源，實測 ESP32-S3 可能會出現偶爾播放斷音。
+**2. 串流音樂平台使用 https 連線時：**
 
-## 前提準備工作
+- 未搭載使用 PSRAM 的裝置，播放時可能偶爾出現斷音、甚至播放中斷等現象。
+
+**3. 立體聲播放：**
+
+- 當播放音源為立體聲時，啟用立體聲支援會耗用更多記憶體，對資源有限的 ESP-C6 更是雪上加霜。
+
+反之，如果是以下情況：
+
+- 串流平台使用 http
+- 裝置不支援實體立體聲輸出，並於程式碼內停用立體聲支援。
+
+ESP32-C6 則可啟用微信風格，並加入觸控功能，一切取決於實際情況。
+
+## 前提必要條件
 
 - 您已具備編譯 [`78/xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) 源代碼的能力。
 
-- 環境內已經安裝 `ESP-ADF`，並且能成功編譯 `ESP-ADF` 內提供的 [`pipeline_http_mp3`](https://gitee.com/EspressifSystems/esp-adf/tree/master/examples/player/pipeline_http_mp3) 或其他範例（[**ESP-ADF 官方文件**](https://docs.espressif.com/projects/esp-adf/zh_CN/latest/get-started/index.html#vs-code-extension)）。
+- 環境內已經安裝 `ESP-ADF`，並且：
+  - 能成功編譯 `ESP-ADF` 內提供的 [`pipeline_http_mp3`範例](https://gitee.com/EspressifSystems/esp-adf/tree/master/examples/player/pipeline_http_mp3) 
+  - 或成功編譯其他範例（[**ESP-ADF 官方文件**](https://docs.espressif.com/projects/esp-adf/zh_CN/latest/get-started/index.html#vs-code-extension)）。
 
-- 可以存取支援 Subsonic API 的網路音樂串流平台：
+- 可存取 Subsonic API 的網路音樂串流平台：
   - 可在內網使用免費開源的軟體（如 Navidrome、Gonic、Airsonic）架設音樂串流平台。
   - 或是互聯網上支援 Subsonic API 的網路音樂串流平台。
 
@@ -63,14 +80,17 @@
   *註：Navidrome 的內建 Web 播放器，僅支援 mp3 的 ID3 內嵌歌詞，不支援外部 .lrc 歌詞顯示。所以請勿使用 Navidrome 內建 Web 播放器測試外掛歌詞功能。*
 
 ## 如何使用本專案
+
 使用 `git clone` 指令下載專案源代碼
+
 ```shell
 git clone https://github.com/benjenq/xiaozhi-esp32-music-player.git
-``` 
+```
 
 ### 1. 修改代碼
 
 所有的開發板（`waveshare-s3-touch-lcd-3.5b`除外）預設沒有引入播放串流音樂的功能，需在對應的開發板上進行少量代碼修改進行啟用。
+
 - 可參考 [`waveshare-s3-touch-lcd-3.5b.cc`](main/boards/waveshare/esp32-s3-touch-lcd-3.5b/waveshare-s3-touch-lcd-3.5b.cc)）：
 
 `#include`標頭段新增：
@@ -85,21 +105,19 @@ git clone https://github.com/benjenq/xiaozhi-esp32-music-player.git
 HttpMp3Player* music_player_ = nullptr;
 ```
 
-新增播放器的初始化：
+新增播放器的初始化（若裝置支援立體聲，`HttpMp3Player`初始化參數可填入`true`），以及開發板初始化引入播放器，範例如下（需參照不同的開發板的初始化方法）：
 
 ```cpp
     void InitializeTools(){
-        music_player_ = new HttpMp3Player();
+        music_player_ = new HttpMp3Player(); //若裝置支援立體聲，可使用 new HttpMp3Player(true);
     }
-```
+    
+    ...(其他代碼)...
 
-開發板初始化引入播放器初始化程序（需參照不同的開發板的初始化結構）：
-
-```cpp
     CustomBoard() : ...{
-      ...
+      ...(其他代碼)
       InitializeTools();
-      ...
+      ...(其他代碼)
     }
 ```
 
@@ -126,13 +144,13 @@ HttpMp3Player* music_player_ = nullptr;
 收到音乐相关的需求时，只使用 MCP 工具 self.music.play_song，同时禁止使用 search_music 功能。播放成功时回覆播放讯息。
 ```
 
-強迫機器人關閉內建的雲端音樂播放功能，執行指定的音樂流播放工具。
+並且到小智機器人後台的 MCP 工具中，關閉預設的音樂播放功能，避免系統出現兩個 MCP 音樂播放工具而互搶任務。
 
 ### 4. ESP-ADF 的補完，以及 ESP-IDF 的修正
 
 #### 4.1  ESP-ADF 的修正：補完 `config AUDIO_BOARD_CUSTOM`
 
-本專案使用 ESP-ADF 開發套件中兩個組件：`audio_stream` 與 `audio_pipeline`，並參考官方範例[`pipeline_http_mp3`](https://gitee.com/EspressifSystems/esp-adf/tree/master/examples/player/pipeline_http_mp3)。這個範例中，僅一百多行就處理了區塊下載、緩存管理、mp3 解碼、音頻採樣等複雜的工作。
+本專案使用 ESP-ADF 開發套件中兩個組件：`audio_stream` 與 `audio_pipeline`，並參考官方範例[`pipeline_http_mp3`](https://gitee.com/EspressifSystems/esp-adf/tree/master/examples/player/pipeline_http_mp3)。這個範例中，僅一百多行就處理了區塊下載、緩存管理、mp3 檔案分析與解碼、音頻採樣等複雜的工作。
 
 雖然本專案只用到兩個組件，不過由於 ESP-ADF 組件的相依性，仍須引入 ESP-IDF 中的 `audio_board` 組件，否則專案會編譯失敗。
 
@@ -171,12 +189,14 @@ HttpMp3Player* music_player_ = nullptr;
 ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 需要修正，否則組件的功能可能會發生異常。修正的指令位於 `esp-adf/idf_patches` 內：
 
 - 須根據 ESP-IDF 的版本，選擇對應的修正指令。
+
 - 修正的指令為 *(以下是 macOS 環境變數為例)*：
   
   ```shell
   cd $IDF_PATH
   git apply --ignore-space-change $ADF_PATH/idf_patches/idf_vX.X_freertos.patch
   ```
+  
   X.X 為 ESP-IDF 的版本。個人實測 ESP-IDF v5.5.2 版有效。
 
 ### 逐一完成上述的操作，便可編譯和刷寫本專案韌體。
@@ -186,6 +206,7 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 播放音樂：說出自然語言命令
 
 ```text
+播放音樂
 我想聽周董的歌
 播放五月天的音樂
 播放周杰倫的花海
@@ -193,15 +214,18 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 ```
 
 播放模式切換：
-- 使用`「設置單曲模式」`、`「設置連播模式」`等類似命令切換。
+
+- 使用`「設置單曲模式」`、`「設定連播模式」`等類似命令切換。
 - 有時 AI 會假回覆但其實沒有調用 MCP，命令加上「工具」可改善這個問題，如`「工具設置連播模式」`。
 
 單曲模式：
+
 - 播放一首歌結束後，會進入聆聽命令模式，等待語音命令。
 
 連續播放模式：
+
 - 只要有找到歌，就會一直播放。音樂超過兩首時，會隨機選取。
-- 用 BOOT 按鈕中斷連續播放。
+- 必須用 BOOT 按鈕中斷連續播放。
 
 ## 其他說明
 
@@ -217,22 +241,23 @@ ESP-ADF 的某些組件會用到 ESP-IDF 中不存在的方法，所以 ESP-IDF 
 
 修改代碼文件：
 
-| 文件名稱                                               | 說明                                                                         |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
-| main/assets/locales/zh-CN,zh-TW,en-US/language.json   | 新增音樂播放提示多語系                                                           |
-| sdkconfig.defaults.xxxx                               | 新增 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y ，編譯 ESP-ADF 必要。      |
-| idf_component.yml                                     | 新增 bblanchon/arduinojson: ^7.4.3                                            |
-| CMakeLists.txt                                        | 新增 ESP-ADF 組件                                                              |
-| main/CMakeLists.txt                                   | 加入播放器源碼，並搭配根目錄 CMakeLists.txt 的相關修改                              |
-| main/application.cc                                   | 切換聊天狀態時，停止音樂播放                                                      |
-| main/Kconfig.projbuild                                | 加入 Subsonic API 相關項目，修改串流音樂位址不需修改代碼                            |
-| main/audio/audio_codec.h                              | 新增切換音樂和語音 Sample Rate 的功能                                            |
-| main/audio/audio_codec.cc                             | 同上                                                                          |
-| main/audio/audio_service.cc                           | 中斷音頻輸出加入音樂播放判定，避免播放音樂時被系統中斷輸出                             |
-| main/boards/common/board.h                            | 新增音樂播放器的虛擬介面                                                         |
-| main/boards/common/board.cc                           | 同上                                                                          |
-| main/boards/common/power_save_timer.cc                | 啟用電源管理程序時，播放音樂不進入省電模式判定                                       |
-| main/boards/common/sleep_timer.cc                     | 啟用裝置睡眠模式時，播放音樂不進入省電模式判定                                       |
+| 文件名稱                                             | 說明                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------ |
+| main/assets/locales/zh-CN,zh-TW,en-US/language.json | 新增音樂播放提示多語系。                                                       |
+| sdkconfig.defaults.xxxx                             | 新增 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y ，編譯 ESP-ADF 必要。 |
+| idf_component.yml                                   | 新增 bblanchon/arduinojson: ^7.4.3 組件。                               |
+| CMakeLists.txt                                      | 新增 ESP-ADF 組件。                                                     |
+| main/CMakeLists.txt                                 | 加入播放器源碼，並搭配根目錄 CMakeLists.txt 的相關修改。                               |
+| main/application.cc                                 | 切換聊天狀態時，停止音樂播放 。                                                  |
+| main/Kconfig.projbuild                              | 加入 Subsonic API 相關項目，修改串流音樂位址不需修改代碼。                               |
+| main/audio/audio_codec.h                            | 定義切換音樂和語音的 立體聲/單聲道 與 Sample Rate 接口。                                  |
+| main/audio/audio_codec.cc                           | 接口的實作。                                                                |
+| main/audio/codecs/**.cc                             | 加入`original_std_tx_cfg_ = std_cfg;`儲存 I2S 初始設定，用來恢復 codec 預設值。     |
+| main/audio/audio_service.cc                         | 中斷音頻輸出加入音樂播放判定，避免播放音樂時被系統中斷輸出。                                     |
+| main/boards/common/board.h                          | 新增音樂播放器的虛擬介面。                                                      |
+| main/boards/common/board.cc                         | 同上。                                                                |
+| main/boards/common/power_save_timer.cc              | 啟用電源管理程序時，播放音樂不進入省電模式判定。                                           |
+| main/boards/common/sleep_timer.cc                   | 啟用裝置睡眠模式時，播放音樂不進入省電模式判定。                                           |
 
 [這裡](https://github.com/benjenq/xiaozhi-esp32-music-player/commit/6ec4ef7fcc7d4a1b56a6a167324ef183fa456824)可以查看具體修改了哪些部分。
 

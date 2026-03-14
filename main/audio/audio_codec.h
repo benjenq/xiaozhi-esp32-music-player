@@ -23,8 +23,8 @@ public:
     virtual void SetInputGain(float gain);
     virtual void EnableInput(bool enable);
     virtual void EnableOutput(bool enable);
-    virtual bool SetOutputSampleRate(int sample_rate); //httpmp3_player
-    virtual bool ResetOutputSampleRate(); 
+    virtual bool SetOutputSampleRate(uint32_t sample_rate, bool enable_strero = false); //httpmp3_player
+    virtual bool ResetOutputSampleRate(); //httpmp3_player
 
     virtual void OutputData(std::vector<int16_t>& data);
     virtual bool InputData(std::vector<int16_t>& data);
@@ -51,7 +51,7 @@ protected:
     bool output_enabled_ = false;
     int input_sample_rate_ = 0;
     int output_sample_rate_ = 0;
-    int original_output_sample_rate_ = 0; //ht
+    i2s_std_config_t original_std_tx_cfg_ = {}; //httpmp3_player
     int input_channels_ = 1;
     int output_channels_ = 1;
     int output_volume_ = 70;

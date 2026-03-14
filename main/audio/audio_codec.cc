@@ -33,11 +33,6 @@ void AudioCodec::Start() {
         ESP_LOGW(TAG, "Output volume value (%d) is too small, setting to default (10)", output_volume_);
         output_volume_ = 10;
     }
-    // 保存原始输出采样率
-    if (original_output_sample_rate_ == 0) {
-        original_output_sample_rate_ = output_sample_rate_;
-        ESP_LOGI(TAG, "Saved original output sample rate: %d Hz", original_output_sample_rate_);
-    }
 
     ESP_LOGI(TAG, "Audio codec started");
 }
@@ -71,35 +66,25 @@ void AudioCodec::EnableOutput(bool enable) {
     ESP_LOGI(TAG, "Set output enable to %s", enable ? "true" : "false");
 }
 
-bool AudioCodec::SetOutputSampleRate(int sample_rate) {
-    // 特殊处理：如果传入 -1，表示重置到原始采样率
-    if (sample_rate == -1) {
-        if (original_output_sample_rate_ > 0) {
-            sample_rate = original_output_sample_rate_;
-            ESP_LOGI(TAG, "Resetting to original output sample rate: %d Hz", sample_rate);
-        } else {
-            ESP_LOGW(TAG, "Original sample rate not available, cannot reset");
-            return false;
-        }
-    }
-    
+bool AudioCodec::SetOutputSampleRate(uint32_t sample_rate, bool enable_strero) {    
     if (sample_rate <= 0 || sample_rate > 192000) {
         ESP_LOGE(TAG, "Invalid sample rate: %d", sample_rate);
         return false;
     }
-    
-    if (output_sample_rate_ == sample_rate) {
-        ESP_LOGI(TAG, "Sample rate already set to %d Hz", sample_rate);
-        return true;
-    }
-    
+      
     if (tx_handle_ == nullptr) {
-        ESP_LOGW(TAG, "TX handle is null, only updating sample rate variable");
-        output_sample_rate_ = sample_rate;
-        return true;
+        ESP_LOGE(TAG, "TX handle is null");
+        return false;
     }
     
     ESP_LOGI(TAG, "Changing output sample rate from %d to %d Hz", output_sample_rate_, sample_rate);
+
+    //先比對 original_std_cfg_ 有沒有重新指定
+    i2s_std_config_t zero_cfg = {};
+    if (memcmp(&original_std_tx_cfg_, &zero_cfg, sizeof(i2s_std_config_t)) == 0) {
+        ESP_LOGE(TAG, "`%s` in codec_XX.cc is not configured; aborting I2S reconfigure.", "original_std_tx_cfg_ = std_cfg;");
+        return false;
+    }
     
     // 先尝试禁用 I2S 通道（如果已启用的话）
     esp_err_t disable_ret = i2s_channel_disable(tx_handle_);
@@ -109,39 +94,45 @@ bool AudioCodec::SetOutputSampleRate(int sample_rate) {
         // 通道可能已经是禁用状态，这是正常的
         ESP_LOGI(TAG, "I2S TX channel was already disabled");
     } else {
-        ESP_LOGW(TAG, "Failed to disable I2S TX channel: %s", esp_err_to_name(disable_ret));
+        ESP_LOGE(TAG, "Failed to disable I2S TX channel: %s", esp_err_to_name(disable_ret));
+        return false;
     }
-    
-    // 重新配置 I2S 时钟
-    i2s_std_clk_config_t clk_cfg = {
-        .sample_rate_hz = (uint32_t)sample_rate,
-        .clk_src = I2S_CLK_SRC_DEFAULT,
-        .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-#ifdef I2S_HW_VERSION_2
-        .ext_clk_freq_hz = 0,
-#endif
-    };
-    
-    esp_err_t ret = i2s_channel_reconfig_std_clock(tx_handle_, &clk_cfg);
+
+    i2s_std_config_t new_std_cfg = original_std_tx_cfg_;
+    //變更 I2S Sample Rate
+    new_std_cfg.clk_cfg.sample_rate_hz = sample_rate;  
+    esp_err_t ret_clk = i2s_channel_reconfig_std_clock(tx_handle_, &new_std_cfg.clk_cfg);
+    if (ret_clk != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to change sample rate to %d Hz: %s", sample_rate, esp_err_to_name(ret_clk));
+        return false;
+    } else {
+        ESP_LOGI(TAG, "Successfully changed output sample rate to %d Hz", sample_rate);        
+    }
+
+    //變更 I2S 的 Slot 設定，判定是否為立體聲
+    new_std_cfg.slot_cfg.slot_mode = (enable_strero) ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO;
+    esp_err_t ret_slot = i2s_channel_reconfig_std_slot(tx_handle_, &new_std_cfg.slot_cfg);
+    if (ret_slot != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable %s mode: %s", (enable_strero) ? "STEREO" : "MONO", esp_err_to_name(ret_slot));
+        return false;
+    } else {
+        ESP_LOGI(TAG, "Successfully enabled %s mode.", (enable_strero) ? "STEREO" : "MONO");
+    }
     
     // 重新启用通道（无论之前是什么状态，现在都需要启用以便播放音频）
     esp_err_t enable_ret = i2s_channel_enable(tx_handle_);
     if (enable_ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S TX channel: %s", esp_err_to_name(enable_ret));
+        return false;
     } else {
         ESP_LOGI(TAG, "Enabled I2S TX channel");
     }
-    
-    if (ret == ESP_OK) {
-        output_sample_rate_ = sample_rate;
-        ESP_LOGI(TAG, "Successfully changed output sample rate to %d Hz", sample_rate);
-        return true;
-    } else {
-        ESP_LOGE(TAG, "Failed to change sample rate to %d Hz: %s", sample_rate, esp_err_to_name(ret));
-        return false;
-    }
+    return true;
 }
 
 bool AudioCodec::ResetOutputSampleRate(){
-    return SetOutputSampleRate(original_output_sample_rate_);
+    if(original_std_tx_cfg_.clk_cfg.sample_rate_hz > 0){
+        output_sample_rate_ = original_std_tx_cfg_.clk_cfg.sample_rate_hz;
+    }
+    return SetOutputSampleRate(output_sample_rate_);
 }

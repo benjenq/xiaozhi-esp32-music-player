@@ -28,7 +28,7 @@ struct MusicInfo {
 
 class HttpMp3Player : public MusicPlayer {
 public: //Misic override
-    HttpMp3Player();
+    HttpMp3Player(bool support_stereo = false);
     ~HttpMp3Player() override;
 
     bool Play() override;
@@ -40,6 +40,7 @@ public: // HttpMp3Player 方法
     bool QueryAndPlay(const std::string& song_name, const std::string& artist_name, std::string& query_result);
 
 private:
+    bool support_stereo_ = false;
     bool is_playing_ = false;
     bool stop_flag_ = false;
     MusicInfo current_music_info_ = {}; //宣告、初始化（initialization）時可以這樣寫。後續清空也只需要 current_music_info_ = {};
@@ -49,10 +50,12 @@ private:
     std::vector<MusicInfo> playlists_ = {}; //播放的曲目清單
 
     bool get_music_info(const std::string& song_name, const std::string& artist_name);
-    bool parse_jsondoc_to_musicinfo(const DynamicJsonDocument &doc, const bool random = false);
+    bool parse_jsondoc_to_musicinfo(const JsonDocument &doc, const bool random = false);
+
+    bool random_choose_song();
 
     bool get_song_lyrics(const std::string& song_id);
-    bool parse_jsondoc_to_lyric(const DynamicJsonDocument &doc);
+    bool parse_jsondoc_to_lyric(const JsonDocument &doc);
 
     void continuous_playing(); //連續播放模式入口
     static void streaming_task(void* arg);

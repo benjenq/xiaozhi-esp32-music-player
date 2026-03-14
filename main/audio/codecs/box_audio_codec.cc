@@ -174,6 +174,7 @@ void BoxAudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_
         }
     };
 
+    original_std_tx_cfg_ = std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_tdm_mode(rx_handle_, &tdm_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));

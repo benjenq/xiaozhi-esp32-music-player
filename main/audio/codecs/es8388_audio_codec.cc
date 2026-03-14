@@ -128,7 +128,8 @@ void Es8388AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
             }
         }
     };
-
+    
+    original_std_tx_cfg_ = std_cfg; //httpmp3_player
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
