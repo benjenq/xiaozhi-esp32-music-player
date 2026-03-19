@@ -4,6 +4,7 @@
 #include <string>
 #include <vector> //vector
 #include <memory> //unique_ptr
+#include <atomic>
 #include <ArduinoJson.h>
 
 typedef enum {
@@ -42,12 +43,15 @@ public: // HttpMp3Player 方法
 private:
     bool support_stereo_ = false;
     bool is_playing_ = false;
-    bool stop_flag_ = false;
+    std::atomic<bool> stop_flag_{false};
     MusicInfo current_music_info_ = {}; //宣告、初始化（initialization）時可以這樣寫。後續清空也只需要 current_music_info_ = {};
 
     //連續播放模式
     PlayMode play_mode_ = PlayModeSingle; //播放模式
     std::vector<MusicInfo> playlists_ = {}; //播放的曲目清單
+
+    PlayMode get_play_mode();
+    bool set_play_mode(const PlayMode mode);
 
     bool get_music_info(const std::string& song_name, const std::string& artist_name);
     bool parse_jsondoc_to_musicinfo(const JsonDocument &doc, const bool random = false);

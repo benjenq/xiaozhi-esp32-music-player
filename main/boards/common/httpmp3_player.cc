@@ -2,6 +2,7 @@
 #include "board.h"
 #include "display.h"
 #include "system_info.h"
+#include "settings.h"
 #include "audio/audio_codec.h"
 #include "application.h"
 #include <esp_log.h>
@@ -28,6 +29,7 @@ const std::string subsonic_api_para = CONFIG_SUBSONICAPI_PARA; //"u=admin&p=1111
 #pragma region 類別成員函數 - 基本
 HttpMp3Player::HttpMp3Player(bool support_stereo){
     support_stereo_ = support_stereo;
+    play_mode_ = get_play_mode();
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddTool("self.music.play_song",
             "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
@@ -87,12 +89,12 @@ HttpMp3Player::HttpMp3Player(bool support_stereo){
                 std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::tolower);
                 
                 if (mode_str == "single" || mode_str == "單曲") {
-                    // 设置为频谱显示模式
-                    play_mode_ = PlayModeSingle;
+                    // 設定為單曲播放模式
+                    set_play_mode(PlayModeSingle);
                     return "{\"success\": true, \"message\": \"已切换到單曲模式\"}";
                 } else if (mode_str == "continuous" || mode_str == "连续" || mode_str == "连播" ||mode_str == "循环") {
-                // 设置为歌词显示模式
-                    play_mode_ = PlayModeContinuous;
+                    // 設定為連續播放模式
+                    set_play_mode(PlayModeContinuous);
                     return "{\"success\": true, \"message\": \"已切换到连续播放模式。\"}";
                     } else {
                     return "{\"success\": false, \"message\": \"无效的音樂播放模式，请使用 'single' 或 'continuous'\"}";
@@ -121,6 +123,29 @@ bool HttpMp3Player::Stop() {
 bool HttpMp3Player::IsPlaying() {
     return is_playing_;
 }
+#pragma endregion
+
+#pragma region 設定/取得播放模式
+
+bool HttpMp3Player::set_play_mode(const PlayMode mode){
+    play_mode_ = mode;
+    Settings settings("httpmp3_player", true);
+    settings.SetInt("playmode", play_mode_);
+    return true;
+}
+
+PlayMode HttpMp3Player::get_play_mode(){
+    Settings settings("httpmp3_player", false);
+    int value = settings.GetInt("playmode", PlayModeSingle);
+    if (value != PlayModeSingle && value != PlayModeContinuous) {  //有可能讀出來是壞的值
+        set_play_mode(PlayModeSingle); //強制設定 PlayModeSingle
+    }
+    else{
+        play_mode_ = (PlayMode)value;
+    }
+    return play_mode_;
+}
+
 #pragma endregion
 
 #pragma region 全域函數
@@ -581,6 +606,156 @@ bool HttpMp3Player::get_song_lyrics(const std::string& song_id){
 
 #pragma endregion
 
+#pragma region 取得專輯封面
+#if defined(CONFIG_SPIRAM)
+
+bool get_cover_by_coverid(const std::string& cover_id, uint8_t** out_buf, size_t* out_size){
+#ifdef CONFIG_SPIRAM
+#define BUF_CAP MALLOC_CAP_SPIRAM
+const size_t MAX_COVER_SIZE = 512 * 1024;
+#else
+#warning "ESP32-C6 確定陣亡了，不能播放封面！"
+return false;
+#define BUF_CAP MALLOC_CAP_INTERNAL
+const size_t MAX_COVER_SIZE = 128 * 1024;
+#endif
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(0);
+    http->SetTimeout(1500);
+
+    std::string cover_url = build_cover_url(cover_id);
+    ESP_LOGI(TAG, "封面 URL: %s", cover_url.c_str());
+
+    if (!http->Open("GET", cover_url)) {
+        ESP_LOGE(TAG, "HTTP open failed");
+        return false;
+    }
+
+    int status = http->GetStatusCode();
+    if (status != 200) {
+        ESP_LOGE(TAG, "HTTP status %d", status);
+        http->Close();
+        return false;
+    }
+    // -------- 初始化 buffer --------
+    // 使用稍大 buffer 避免多次 realloc
+    size_t capacity = 24 * 1024;   // 初始 24 KB
+    size_t size = 0;
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(capacity, BUF_CAP | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGE(TAG, "buf alloc failed");
+        http->Close();
+        return false;
+    }
+
+    // -------- 讀 HTTP chunk --------
+    char tmp[1024];
+    int n;
+    while ((n = http->Read(tmp, sizeof(tmp))) > 0) {
+        // buffer 不夠 → 擴充
+        if (size + n > capacity) {
+            size_t new_capacity = capacity * 2;
+            if (new_capacity > MAX_COVER_SIZE) {
+                ESP_LOGE(TAG, "Cover too large");
+                heap_caps_free(buf);
+                http->Close();
+                return false;
+            }
+            uint8_t* new_buf = (uint8_t*)heap_caps_realloc(buf, new_capacity, BUF_CAP | MALLOC_CAP_8BIT);
+            if (!new_buf) {
+                ESP_LOGE(TAG, "new_buf realloc failed");
+                heap_caps_free(buf);
+                http->Close();
+                return false;
+            }
+            buf = new_buf;
+            capacity = new_capacity;
+        }
+        memcpy(buf + size, tmp, n);
+        size += n;
+    }
+
+    if (n < 0) {
+        ESP_LOGE(TAG, "HTTP read error");
+        heap_caps_free(buf);
+        http->Close();
+        return false;
+    }
+
+    http->Close();
+
+    ESP_LOGI(TAG, "Cover downloaded: %u bytes", (unsigned int)size);
+
+    // ← 在這裡檢查 JPEG / PNG
+    bool is_jpeg = (size >= 2 && buf[0] == 0xFF && buf[1] == 0xD8);
+    bool is_png  = (size >= 4 && buf[0] == 0x89 && buf[1] == 0x50 &&
+                            buf[2] == 0x4E && buf[3] == 0x47);
+
+    ESP_LOGW(TAG, "Download format:%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X .. %02X %02X",
+        buf[0],buf[1],buf[2],buf[3],buf[4],buf[5],buf[6],buf[7],buf[8],buf[9],buf[10],buf[11], buf[size-2], buf[size-1]);
+
+    if (!is_jpeg && !is_png) {
+        ESP_LOGE(TAG, "Unsupported image format:%02X %02X %02X %02X",buf[0],buf[1],buf[2],buf[3]);
+        heap_caps_free(buf);
+        return false;
+    }
+
+    *out_buf = buf;
+    *out_size = size;
+
+    return true;
+}
+
+#include "lcd_display.h"
+#include "esp_lv_decoder.h"
+//圖片解碼
+esp_lv_decoder_handle_t decoder_handle_ = NULL;
+
+void show_cover_by_coverid(const std::string& cover_id) {
+#if !defined(CONFIG_SPIRAM) 
+    return;
+#endif
+    try {
+        auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+        if(display){
+            uint8_t* cover_buf = nullptr;
+            size_t cover_size = 0;
+            if (!get_cover_by_coverid(cover_id, &cover_buf, &cover_size)) {
+                ESP_LOGE(TAG, "Failed to download cover");
+                return;
+            }
+            if (decoder_handle_ == NULL) {
+                esp_err_t ret = esp_lv_decoder_init(&decoder_handle_);
+                if (ret != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to initialize ESP LVGL decoder (%s)", esp_err_to_name(ret));
+                } else {
+                    ESP_LOGI(TAG, "ESP LVGL decoder initialized");
+                }
+            }
+            //方法1. 使用 LVGL 內建解碼器，需要
+            //#include "esp_lv_decoder.h"
+            //   esp_lv_decoder_handle_t decoder_handle_ = NULL;
+            //   <....lv_init();....> //在 lv_init() 之後才 esp_lv_decoder_init
+            //   esp_err_t ret = esp_lv_decoder_init(&decoder_handle_);
+
+            auto cover_img = std::make_unique<LvglAllocatedImage>(cover_buf, cover_size);
+            display->SetPreviewImage(std::move(cover_img));
+        }
+    }
+    catch (const std::bad_alloc& e) {
+        ESP_LOGE(TAG, "Memory allocation failed: %s", e.what());
+    }
+    catch (const std::exception& e) {
+        ESP_LOGE(TAG, "Exception: %s", e.what());
+    }
+    catch (...) {
+        ESP_LOGE(TAG, "Unknown exception occurred");
+    }
+}
+
+#endif
+#pragma endregion
+
 #pragma region 播放 Play 相關
 
 /**
@@ -700,6 +875,17 @@ bool HttpMp3Player::start_streaming_pipeline(){
 
     is_playing_ = true;
     stop_flag_ = false;
+
+    //如果有語音喚醒功能，播放音樂時關閉
+    bool is_wake_word_running = app.GetAudioService().IsWakeWordRunning();
+    if(is_wake_word_running){
+        app.GetAudioService().EnableWakeWordDetection(false);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+#ifdef CONFIG_SPIRAM
+    show_cover_by_coverid(current_music_info_.cover_id);
+#endif
     
     auto &board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE); //避免待機時 WIFI 進入低功耗導致網路降速
@@ -886,8 +1072,10 @@ bool HttpMp3Player::start_streaming_pipeline(){
             if(fill_level < ((4 * 1024 < raw_out_rb_size / 2) ? (4 * 1024) : (raw_out_rb_size / 2)) ){
                 int free_sram          = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
                 int largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-                ESP_LOGI(TAG, "(%d)預緩衝中... (%d/%d) : free sram - %u, largest free block - %u ", pcm_buffer_duration_ms, 
-                        fill_level, raw_out_rb_size, free_sram, largest_free_block );
+                if (fill_level > 0) {
+                    ESP_LOGI(TAG, "(%d)預緩衝中... (%d/%d) : free sram - %u, largest free block - %u ", pcm_buffer_duration_ms, 
+                            fill_level, raw_out_rb_size, free_sram, largest_free_block );
+                }
                 /*PCM 小教室
                 44100 Hz / 16-bit / 立體聲 的資料量：
                    1 個 frame 資料量為：左聲 16 bit = 2 bytes + 右聲 16bit = 2 bytes = 4 bytes。
@@ -957,6 +1145,7 @@ bool HttpMp3Player::start_streaming_pipeline(){
             ESP_LOGE(TAG, "Exception: %s", e.what());
             stop_flag_ = true; // 安全停止
         }
+        vTaskDelay(pdMS_TO_TICKS(3));
     }
 
     ESP_LOGI(TAG, "[ 5 ] Stop audio_pipeline");
@@ -992,6 +1181,11 @@ bool HttpMp3Player::start_streaming_pipeline(){
     }
 
     is_playing_ = false;
+
+    //如果本來有語音喚醒功能，音樂停止時恢復啟用
+    if(is_wake_word_running && !app.GetAudioService().IsWakeWordRunning() ){
+        app.GetAudioService().EnableWakeWordDetection(true);
+    }
 
     if(complete_played){
         app.Schedule([display, message = Lang::Strings::MUSIC_FINISHED]() {
