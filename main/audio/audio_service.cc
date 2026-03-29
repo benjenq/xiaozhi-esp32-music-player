@@ -281,8 +281,8 @@ void AudioService::AudioInputTask() {
             }
         }
 
-        ESP_LOGE(TAG, "Should not be here, bits: %lx", bits);
-        break;
+        // Read timeout/error should not terminate the input task.
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     ESP_LOGW(TAG, "Audio input task stopped");
