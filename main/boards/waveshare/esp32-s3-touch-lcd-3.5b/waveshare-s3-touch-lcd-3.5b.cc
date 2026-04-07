@@ -30,7 +30,12 @@
 #include <lvgl.h>
 #include "esp_video.h"
 
-#include "httpmp3_player.h"  //串流音樂
+// SDMMC
+#include "esp_vfs_fat.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+
+#include "mp3_player.h"  //串流音樂
 
 #define TAG "waveshare_lcd_3_5b"
 
@@ -112,7 +117,7 @@ private:
     PowerSaveTimer* power_save_timer_;
     EspVideo* camera_;
     
-    HttpMp3Player* music_player_ = nullptr;  //串流音樂
+    Mp3Player* music_player_ = nullptr;  //串流音樂
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -177,6 +182,71 @@ private:
         buscfg.sclk_io_num = DISPLAY_CLK_PIN;
         buscfg.max_transfer_sz = DISPLAY_TRANS_SIZE * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    }
+
+    void InitializeSDMMC() { //SDMMC 模式，從官方 DEMO 直接複製過來
+        esp_err_t ret;
+
+        // Options for mounting the filesystem.
+        // If format_if_mount_failed is set to true, SD card will be partitioned and
+        // formatted in case when mounting fails.
+        esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+            .format_if_mount_failed = false,
+            .max_files = 5,
+            .allocation_unit_size = 16 * 1024};
+        const char mount_point[] = SDCARD_MOUNT_POINT;
+        ESP_LOGI(TAG, "Initializing SD card");
+
+        // Use settings defined above to initialize SD card and mount FAT filesystem.
+        // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
+        // Please check its source code and implement error recovery when developing
+        // production applications.
+
+        ESP_LOGI(TAG, "Using SDMMC peripheral");
+
+        // By default, SD card frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
+        // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 40MHz for SDMMC)
+        // Example: for fixed frequency of 10MHz, use host.max_freq_khz = 10000;
+        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+
+        sdmmc_slot_config_t slot_config = {};
+        slot_config.cd = SDMMC_SLOT_NO_CD;
+        slot_config.wp = SDMMC_SLOT_NO_WP;
+        slot_config.width   = SDMMC_SLOT_WIDTH_DEFAULT;
+        slot_config.flags = 0;
+        slot_config.width = 1;
+
+        // On chips where the GPIOs used for SD card can be configured, set them in
+        // the slot_config structure:
+        slot_config.clk = SDMMC_PIN_CLK;
+        slot_config.cmd = SDMMC_PIN_CMD;
+        slot_config.d0 = SDMMC_PIN_D0;
+
+        // Enable internal pullups on enabled pins. The internal pullups
+        // are insufficient however, please make sure 10k external pullups are
+        // connected on the bus. This is for debug / example purpose only.
+        slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+        ESP_LOGI(TAG, "Mounting filesystem");
+        sdmmc_card_t *card;
+        ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+
+        if (ret != ESP_OK)
+        {
+            if (ret == ESP_FAIL)
+            {
+                ESP_LOGE(TAG, "Failed to mount filesystem. "
+                            "If you want the card to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+            }
+            else
+            {
+                ESP_LOGE(TAG, "Failed to initialize the card (%s). "
+                            "Make sure SD card lines have pull-up resistors in place.",
+                        esp_err_to_name(ret));
+            }
+            return;
+        }
+        ESP_LOGI(TAG, "Filesystem mounted");
     }
 
     void InitializeCamera() {
@@ -304,7 +374,7 @@ private:
     }
 
     void InitializeTools(){
-        music_player_ = new HttpMp3Player();  //串流音樂
+        music_player_ = new Mp3Player();  //串流音樂
     }
 
 public:
@@ -323,6 +393,7 @@ public:
 #if TOUCH_ENABLE  
         InitializeTouch();
 #endif
+        InitializeSDMMC();
         InitializeButtons();
         InitializeCamera();
         InitializeTools();
@@ -349,7 +420,7 @@ public:
     }
     
     /* 串流音樂 */
-    virtual HttpMp3Player * GetMusicPlayer() override {
+    virtual Mp3Player * GetMusicPlayer() override {
         return music_player_;
     }
 

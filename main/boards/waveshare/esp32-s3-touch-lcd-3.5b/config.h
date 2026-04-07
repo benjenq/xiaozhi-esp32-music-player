@@ -57,6 +57,14 @@
 #define PMIC_ENABLE 0
 #define TOUCH_ENABLE 1
 
+//SD 卡
+#define SDMMC_PIN_CLK GPIO_NUM_11 //SD_SCLK
+#define SDMMC_PIN_CMD GPIO_NUM_10 //SD_MOSI
+#define SDMMC_PIN_D0  GPIO_NUM_9  //SD_MISO
+#ifndef SDCARD_MOUNT_POINT
+#define SDCARD_MOUNT_POINT              "/sdcard"
+#endif
+
 #define CAM_PIN_PWDN    GPIO_NUM_NC
 #define CAM_PIN_RESET   GPIO_NUM_NC
 #define CAM_PIN_VSYNC   GPIO_NUM_17

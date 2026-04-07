@@ -8,12 +8,17 @@
 #include <atomic>
 #include <mutex>
 
+#define DEFAULT_BRIGHTNESS 4
+
 class SingleLed : public Led {
 public:
     SingleLed(gpio_num_t gpio);
     virtual ~SingleLed();
 
     void OnStateChanged() override;
+    void TurnOn();
+    void TurnOff();
+    void SetColor(uint8_t r, uint8_t g, uint8_t b);
 
 private:
     std::mutex mutex_;
@@ -30,9 +35,7 @@ private:
     void BlinkOnce();
     void Blink(int times, int interval_ms);
     void StartContinuousBlink(int interval_ms);
-    void TurnOn();
-    void TurnOff();
-    void SetColor(uint8_t r, uint8_t g, uint8_t b);
+
 };
 
 #endif // _SINGLE_LED_H_

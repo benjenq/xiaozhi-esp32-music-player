@@ -57,6 +57,7 @@
         "MODEM_INIT_ERROR": "模組初始化失敗",
         "NUM_SONGS_FOUND": "〖找到 %d 首歌〗",
         "MUSIC_FINISHED": "《～♪ 音樂播放完畢 ♪～》",
-        "MUSIC_STOPPED": "《～音樂播放中斷～》"
+        "MUSIC_STOPPED": "《～音樂播放中斷～》",
+        "MUSIC_FROM_SD": "SD 卡掛載成功，將播放 SD 卡上的音樂。"
     }
 }

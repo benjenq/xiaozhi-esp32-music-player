@@ -688,14 +688,17 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         codec_->EnableInput(false);
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        auto *music_player = Board::GetInstance().GetMusicPlayer();
-        if(music_player){  //板子若沒宣告 music_player
-            if(music_player->IsPlaying()){ //檢查是否正在播放中
-                last_output_time_ = std::chrono::steady_clock::now();
+        // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
+        if (!(codec_->duplex() && codec_->input_enabled())) {
+            auto *music_player = Board::GetInstance().GetMusicPlayer();
+            if(music_player){  //板子若沒宣告 music_player
+                if(music_player->IsPlaying()){ //檢查是否正在播放中
+                    last_output_time_ = std::chrono::steady_clock::now();
+                }
             }
-        }
-        else{
-            codec_->EnableOutput(false);
+            else{
+                codec_->EnableOutput(false);
+            }
         }
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {

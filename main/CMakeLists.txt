@@ -60,7 +60,9 @@ list(APPEND SOURCES
     "boards/common/sleep_timer.cc"
     "boards/common/sy6970.cc"
     "boards/common/system_reset.cc"
-    "boards/common/httpmp3_player.cc"
+    "boards/common/mp3_player.cc"
+    "boards/common/mp3_player_http.cc"
+    "boards/common/mp3_player_fatfs.cc"
 )
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
 
